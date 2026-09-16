@@ -21,6 +21,8 @@ pub(crate) struct PlayerMenu {
     username_status: Option<String>,
     editing_username: bool,
     start_requested: bool,
+    sign_in_requested: bool,
+    auth_pending: bool,
     username_changed: Option<String>,
 }
 
@@ -65,6 +67,8 @@ impl PlayerMenu {
             username_status: None,
             editing_username: false,
             start_requested: false,
+            sign_in_requested: false,
+            auth_pending: false,
             username_changed: None,
         }
     }
@@ -152,6 +156,25 @@ impl PlayerMenu {
         self.username_changed.take()
     }
 
+    pub(crate) fn take_sign_in_requested(&mut self) -> bool {
+        std::mem::take(&mut self.sign_in_requested)
+    }
+
+    pub(crate) fn set_auth_pending(&mut self, pending: bool) {
+        self.auth_pending = pending;
+    }
+
+    pub(crate) fn set_authenticated(&mut self, user: &crate::network::AuthUser) {
+        let username = user.username.clone().unwrap_or_else(|| user.name.clone());
+        self.username = username.clone();
+        self.app.dispatch(AppAction::ReplaceSession {
+            account_id: Some(user.id.clone()),
+            username: Some(username),
+            body_id: None,
+            date_of_birth: None,
+        });
+    }
+
     fn show(&mut self, ui: &mut egui::Ui, game_name: &str) {
         let snapshot = self.app.snapshot();
         egui::ScrollArea::vertical()
@@ -179,34 +202,47 @@ impl PlayerMenu {
                     ui.add_space(28.0);
                     section_label(ui, "ACCOUNT");
                     egui::Frame::group(ui.style()).show(ui, |ui| {
-                        let label = snapshot
-                            .profile
-                            .username
-                            .as_deref()
-                            .unwrap_or(&self.username);
-                        menu_row(ui, "@", "Change your username", label, true, || {
-                            self.editing_username = true;
-                            self.username_status = None;
-                            self.app.dispatch(AppAction::BeginUsernameEdit {});
-                        });
-                        ui.separator();
-                        menu_row(
-                            ui,
-                            "♙",
-                            "Choose your morph",
-                            "Customize your character",
-                            false,
-                            || {},
-                        );
-                        ui.separator();
-                        menu_row(
-                            ui,
-                            "!",
-                            "Block or unblock players",
-                            "Players & safety",
-                            false,
-                            || {},
-                        );
+                        if snapshot.account_id.is_some() {
+                            let label = snapshot
+                                .profile
+                                .username
+                                .as_deref()
+                                .unwrap_or(&self.username);
+                            menu_row(ui, "@", "Change your username", label, true, || {
+                                self.editing_username = true;
+                                self.username_status = None;
+                                self.app.dispatch(AppAction::BeginUsernameEdit {});
+                            });
+                            ui.separator();
+                            menu_row(
+                                ui,
+                                "♙",
+                                "Choose your morph",
+                                "Customize your character",
+                                false,
+                                || {},
+                            );
+                            ui.separator();
+                            menu_row(
+                                ui,
+                                "!",
+                                "Block or unblock players",
+                                "Players & safety",
+                                false,
+                                || {},
+                            );
+                        } else {
+                            menu_row(
+                                ui,
+                                "@",
+                                if self.auth_pending { "Signing in…" } else { "Sign in" },
+                                "Manage your account",
+                                !self.auth_pending,
+                                || {
+                                self.sign_in_requested = true;
+                                },
+                            );
+                        }
                     });
                     if self.editing_username {
                         self.username_editor(ui, &snapshot);

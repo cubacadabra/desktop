@@ -211,6 +211,36 @@ impl DesktopApp {
                     );
                 }
                 network::Event::Disconnected => self.client.transport_disconnected(),
+                network::Event::AuthStarted => {
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_auth_pending(true);
+                    }
+                    info!("browser sign-in started");
+                }
+                network::Event::AuthCompleted { user } => {
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_auth_pending(false);
+                    }
+                    let username = user.username.clone().unwrap_or_else(|| user.name.clone());
+                    self.username = username.clone();
+                    let _ = self.client.engine_mut().set_username_value(&username);
+                    self.client.engine_mut().set_authenticated_value(true);
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_authenticated(&user);
+                    }
+                    self.network.disconnect();
+                    self.client.request_transport();
+                    if self.in_game {
+                        self.dispatch_actions();
+                    }
+                    info!("signed in as {}", user.name);
+                }
+                network::Event::AuthError(message) => {
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_auth_pending(false);
+                    }
+                    error!("sign-in failed: {message}");
+                }
                 network::Event::Message(source) => {
                     let _ = self.client.receive_text(&source);
                 }
@@ -274,6 +304,9 @@ impl DesktopApp {
             } else {
                 self.username = username;
             }
+        }
+        if menu.take_sign_in_requested() {
+            self.network.begin_browser_auth();
         }
         if menu.take_start_requested() {
             self.in_game = true;
