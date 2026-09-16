@@ -1,0 +1,12 @@
+name: Cross-repository compatibility
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  compatibility:
+    uses: cubacadabra/tools/.github/workflows/compatibility-reusable.yml@main
+    with:
+      desktop_ref: ${{ github.sha }}

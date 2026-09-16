@@ -1,0 +1,29 @@
+name: Release Cubacadabra Desktop
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    uses: cubacadabra/tools/.github/workflows/native-release-reusable.yml@main
+    with:
+      app_repository: ${{ github.repository }}
+      app_ref: ${{ github.ref_name }}
+      app_directory: desktop
+      app_name: desktop
+      display_name: Cubacadabra Desktop
+      archive_prefix: cubacadabra-desktop
+      cargo_manifest: desktop/Cargo.toml
+      binary_name: desktop
+      bundle_builder: false
+      rust_repository: cubacadabra/rust
+      rust_ref: main
+      tools_repository: cubacadabra/tools
+      tools_ref: main
