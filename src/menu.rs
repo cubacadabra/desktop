@@ -32,6 +32,7 @@ impl PlayerMenu {
         game_renderer: &cubacadabra_client::native::Renderer,
     ) -> Self {
         let context = egui::Context::default();
+        context.set_theme(egui::ThemePreference::System);
         let state = EguiState::new(
             context.clone(),
             egui::ViewportId::ROOT,
@@ -82,7 +83,6 @@ impl PlayerMenu {
         let context = self.context.clone();
         let output = context.run_ui(input, |context| {
             egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(egui::Color32::from_rgb(246, 241, 231)))
                 .show(context, |ui| self.show(ui, game_name));
         });
         self.state
