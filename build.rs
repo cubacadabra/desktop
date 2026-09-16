@@ -1,9 +1,9 @@
+use cubacadabra_builder::{BuildOptions, build_game};
 use std::{
     env,
     error::Error,
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -25,7 +25,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-    if !tools_root.join("pyproject.toml").is_file() || !tools_root.join("src/cubacadabra").is_dir()
+    if !tools_root.join("Cargo.toml").is_file()
+        || !tools_root.join("crates/cli/Cargo.toml").is_file()
     {
         return Err(format!(
             "the shared Cubacadabra tools checkout is missing: {}",
@@ -34,24 +35,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    let python_path = tools_root.join("src");
-    let output = Command::new("python3")
-        .env("PYTHONPATH", &python_path)
-        .arg("-m")
-        .arg("cubacadabra")
-        .arg("build-game")
-        .arg(&game_root)
-        .arg("--output")
-        .arg(&output_root)
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "building the bundled first-game package failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
+    build_game(&BuildOptions {
+        source_root: game_root.join("src"),
+        manifest_path: game_root.join("manifest.json"),
+        output: output_root.clone(),
+        zip_path: None,
+    })?;
 
     let mut files = Vec::new();
     collect_files(&output_root, &output_root, &mut files)?;

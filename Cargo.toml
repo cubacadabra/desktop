@@ -24,6 +24,9 @@ ureq = "3"
 url = "2"
 winit = "0.30"
 
+[build-dependencies]
+cubacadabra-builder = { path = "../tools/crates/builder" }
+
 [profile.release]
 opt-level = "s"
 lto = true

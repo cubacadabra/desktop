@@ -15,9 +15,8 @@ the default launch needs no package argument:
 To run another package during development, build it with the shared tools
 repository and pass the optional path:
 
-    PYTHONPATH=../tools/src python3 -m cubacadabra build-game \
-      --source ../first-game \
-      --output /tmp/first-game-package
+    cargo run --release --manifest-path ../tools/Cargo.toml --bin cubacadabra -- \
+      build-game --source ../first-game --output /tmp/first-game-package
 
     cargo run -- --path /tmp/first-game-package
 
