@@ -1,4 +1,5 @@
 mod assets;
+mod menu;
 mod network;
 mod options;
 
@@ -32,6 +33,9 @@ struct DesktopApp {
     atlas: Option<assets::ImageAtlas>,
     window: Option<Window>,
     renderer: Option<Renderer>,
+    menu: Option<menu::PlayerMenu>,
+    in_game: bool,
+    username: String,
     keys: HashSet<KeyCode>,
     jump_queued: bool,
     pointer: Option<(f32, f32)>,
@@ -46,7 +50,12 @@ impl DesktopApp {
     fn load(package_root: PathBuf) -> Result<Self, Box<dyn Error>> {
         let manifest_source = read_package_file(&package_root, "manifest.json")?;
         let script_source = read_package_file(&package_root, "game.luau")?;
-        let client = ClientSession::load(&manifest_source, &script_source)?;
+        let mut client = ClientSession::load(&manifest_source, &script_source)?;
+        let username = std::env::var("CUBACADABRA_USERNAME")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "Player".to_owned());
+        let _ = client.engine_mut().set_username_value(&username);
         let network = network::BackendClient::new(client.game_id()).map_err(DesktopError)?;
         let atlas = assets::load(&package_root, &manifest_source)?;
         info!("desktop loaded: game_id={}", client.game_id());
@@ -57,6 +66,9 @@ impl DesktopApp {
             atlas,
             window: None,
             renderer: None,
+            menu: None,
+            in_game: true,
+            username,
             keys: HashSet::new(),
             jump_queued: false,
             pointer: None,
@@ -99,7 +111,9 @@ impl DesktopApp {
                 "the game's image atlas could not be uploaded".into(),
             )));
         }
+        let player_menu = menu::PlayerMenu::new(&window, &renderer);
         self.window = Some(window);
+        self.menu = Some(player_menu);
         self.renderer = Some(renderer);
         self.update_viewport();
         self.request_redraw();
@@ -132,6 +146,10 @@ impl DesktopApp {
 
     fn render(&mut self) {
         self.drain_network();
+        if !self.in_game {
+            self.render_menu();
+            return;
+        }
         let now = Instant::now();
         let delta = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
         self.last_frame = now;
@@ -164,6 +182,10 @@ impl DesktopApp {
         self.zoom_delta = 0.0;
         self.dispatch_actions();
         self.client.step(delta);
+        if self.drain_ui_events() {
+            self.leave_game();
+            return;
+        }
         self.dispatch_actions();
         if let Some(movement) = self.client.local_movement(moving, sprint) {
             self.network.send_move(movement);
@@ -178,7 +200,16 @@ impl DesktopApp {
     fn drain_network(&mut self) {
         while let Some(event) = self.network.try_recv() {
             match event {
-                network::Event::Connected => self.client.transport_connected(),
+                network::Event::Connected => {
+                    self.client.transport_connected();
+                    self.network.send(
+                        serde_json::json!({
+                            "type": "set_username",
+                            "username": self.username,
+                        })
+                        .to_string(),
+                    );
+                }
                 network::Event::Disconnected => self.client.transport_disconnected(),
                 network::Event::Message(source) => {
                     let _ = self.client.receive_text(&source);
@@ -193,6 +224,61 @@ impl DesktopApp {
                 ClientAction::SetWorld(world) => self.network.set_world(world),
                 ClientAction::SendText(message) => self.network.send(message),
             }
+        }
+    }
+
+    fn drain_ui_events(&mut self) -> bool {
+        let mut leave_game = false;
+        while let Some(source) = self.client.poll_ui_event_json() {
+            let Ok(event) = serde_json::from_slice::<serde_json::Value>(&source) else {
+                continue;
+            };
+            if event.get("action").and_then(serde_json::Value::as_str)
+                == Some("shared.leave_game")
+                && event.get("phase").and_then(serde_json::Value::as_str) == Some("activate")
+            {
+                leave_game = true;
+            }
+        }
+        leave_game
+    }
+
+    fn leave_game(&mut self) {
+        let returned_to_lobby = self.client.engine_mut().start_world_by_id("lobby");
+        self.client.transport_disconnected();
+        self.client.request_transport();
+        self.network.disconnect();
+        self.clear_input();
+        self.in_game = false;
+        info!("returned to player menu (lobby={returned_to_lobby})");
+    }
+
+    fn render_menu(&mut self) {
+        let Some(window) = &self.window else { return };
+        let game_name = self
+            .package_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("game")
+            .to_owned();
+        let Some(menu) = &mut self.menu else { return };
+        let prepared = menu.prepare(window, &game_name);
+        if let Some(renderer) = &mut self.renderer {
+            renderer.draw_with_overlay(|device, queue, encoder, destination| {
+                menu.paint(device, queue, encoder, destination, prepared);
+            });
+        }
+        if let Some(username) = menu.take_username_changed() {
+            if !self.client.engine_mut().set_username_value(&username) {
+                error!("shared username validation rejected desktop username");
+            } else {
+                self.username = username;
+            }
+        }
+        if menu.take_start_requested() {
+            self.in_game = true;
+            self.client.request_transport();
+            self.dispatch_actions();
         }
     }
 
@@ -235,6 +321,11 @@ impl ApplicationHandler for DesktopApp {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
+        if !self.in_game
+            && let (Some(menu), Some(window)) = (&mut self.menu, &self.window)
+        {
+            menu.on_window_event(window, &event);
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => self.resize(size),
@@ -247,8 +338,8 @@ impl ApplicationHandler for DesktopApp {
                 self.render();
                 self.request_redraw();
             }
-            WindowEvent::KeyboardInput { event, .. } => self.handle_key(event),
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::KeyboardInput { event, .. } if self.in_game => self.handle_key(event),
+            WindowEvent::CursorMoved { position, .. } if self.in_game => {
                 let next = self.logical_pointer(position.x, position.y);
                 if let Some(previous) = self.pointer
                     && self.camera_active
@@ -262,8 +353,10 @@ impl ApplicationHandler for DesktopApp {
                 }
                 self.pointer = Some(next);
             }
-            WindowEvent::MouseInput { state, button, .. } => self.handle_mouse(state, button),
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseInput { state, button, .. } if self.in_game => {
+                self.handle_mouse(state, button)
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.in_game => {
                 self.zoom_delta += match delta {
                     MouseScrollDelta::LineDelta(_, y) => y * 0.9,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32 / 100.0,

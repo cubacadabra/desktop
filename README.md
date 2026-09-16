@@ -22,6 +22,11 @@ set `CUBACADABRA_BACKEND_URL` for another environment.
 Controls are `WASD` or the arrow keys to move, `Shift` to sprint, `Space` to
 jump, left-drag to orbit the camera, and the mouse wheel to zoom.
 
+Selecting **Leave Game** from the shared in-game menu disconnects the game
+world and returns to the native player menu. That menu keeps the shared app
+profile flow available for changing the username; set `CUBACADABRA_USERNAME`
+to choose the initial local username.
+
 ## Repository boundaries
 
 Desktop and Studio both depend on the shared Rust engine in `../rust`.

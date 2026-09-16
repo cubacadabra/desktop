@@ -32,6 +32,7 @@ struct Move {
 
 enum Command {
     SetWorld(String),
+    Disconnect,
     Send(String),
     Move(Move),
     Shutdown,
@@ -71,6 +72,10 @@ impl BackendClient {
 
     pub fn set_world(&self, world: String) {
         let _ = self.commands.send(Command::SetWorld(world));
+    }
+
+    pub fn disconnect(&self) {
+        let _ = self.commands.send(Command::Disconnect);
     }
 
     pub fn send(&self, message: String) {
@@ -121,6 +126,12 @@ fn run_worker(
                         last_sent_move = None;
                         retry_at = Instant::now();
                     }
+                }
+                Ok(Command::Disconnect) => {
+                    desired_world = None;
+                    disconnect(&mut socket, &mut connected_world, &events);
+                    pending.clear();
+                    last_sent_move = None;
                 }
                 Ok(Command::Send(message)) => pending.push_back(message),
                 Ok(Command::Move(movement)) => latest_move = Some(movement.movement),
