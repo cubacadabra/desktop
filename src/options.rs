@@ -12,7 +12,7 @@ impl fmt::Display for DesktopError {
 impl Error for DesktopError {}
 
 pub struct Options {
-    pub package: PathBuf,
+    pub package: Option<PathBuf>,
 }
 
 pub fn parse() -> Result<Options, Box<dyn Error>> {
@@ -20,7 +20,7 @@ pub fn parse() -> Result<Options, Box<dyn Error>> {
     let mut package = None;
     while let Some(argument) = args.next() {
         if argument == "--help" || argument == "-h" {
-            println!("Usage: desktop --path <built-game-package>");
+            println!("Usage: desktop [--path <built-game-package>]");
             println!();
             println!("Run a built Cubacadabra game package.");
             std::process::exit(0);
@@ -39,17 +39,20 @@ pub fn parse() -> Result<Options, Box<dyn Error>> {
             ))));
         }
     }
-    let package = package.ok_or_else(|| {
-        Box::new(DesktopError(
-            "a built game package is required; pass --path <directory>".into(),
-        )) as Box<dyn Error>
-    })?;
-    let package = PathBuf::from(package).canonicalize()?;
-    if !package.is_dir() {
-        return Err(Box::new(DesktopError(format!(
-            "package is not a directory: {}",
-            package.display()
-        ))));
-    }
+    let package = package
+        .map(PathBuf::from)
+        .map(|package| {
+            package.canonicalize().and_then(|package| {
+                if package.is_dir() {
+                    Ok(package)
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("package is not a directory: {}", package.display()),
+                    ))
+                }
+            })
+        })
+        .transpose()?;
     Ok(Options { package })
 }

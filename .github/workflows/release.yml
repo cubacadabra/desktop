@@ -27,3 +27,5 @@ jobs:
       rust_ref: main
       tools_repository: cubacadabra/tools
       tools_ref: main
+      game_repository: cubacadabra/first-game
+      game_ref: main

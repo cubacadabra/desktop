@@ -7,7 +7,13 @@ connects to the multiplayer Worker.
 
 ## Run locally
 
-Build a package with the shared tools repository, then run it:
+The player bundles the sibling `first-game` package during the Cargo build, so
+the default launch needs no package argument:
+
+    cargo run
+
+To run another package during development, build it with the shared tools
+repository and pass the optional path:
 
     PYTHONPATH=../tools/src python3 -m cubacadabra build-game \
       --source ../first-game \
@@ -15,8 +21,8 @@ Build a package with the shared tools repository, then run it:
 
     cargo run -- --path /tmp/first-game-package
 
-The player accepts either `--path <package-directory>` or a package directory
-as its first positional argument. Debug builds default to the local Worker at
+`--path <package-directory>` and a package directory as the first positional
+argument remain available as development overrides. Debug builds default to the local Worker at
 `http://127.0.0.1:8787` and local sign-in site at `http://127.0.0.1:5173`.
 `cargo run --release` defaults to `https://api.cubacadabra.com` and
 `https://cubacadabra.com/login/`. Set `CUBACADABRA_BACKEND_URL` and/or

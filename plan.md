@@ -130,8 +130,9 @@ The handler must:
 - support macOS, Windows, and Linux registration;
 - let the website fall back to install/download instructions.
 
-Until that protocol and package retrieval path are ready, Desktop resumes the
-package supplied on its command line and the web catalog opens in the browser.
+Until that protocol and package retrieval path are ready, Desktop starts from
+the bundled `first-game` package and accepts a package path as a development
+override; the web catalog opens in the browser.
 
 ## Studio boundary
 

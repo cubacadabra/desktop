@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::{
     collections::BTreeMap,
     error::Error,
+    fs,
     path::{Component, Path, PathBuf},
 };
 
@@ -20,6 +21,33 @@ pub struct ImageAtlas {
 }
 
 pub fn load(root: &Path, manifest_source: &str) -> Result<Option<ImageAtlas>, Box<dyn Error>> {
+    load_images(manifest_source, |relative| {
+        let path = safe_asset_path(root, relative)?;
+        Ok(fs::read(path)?)
+    })
+}
+
+pub fn load_bundled(
+    files: &[(&str, &[u8])],
+    manifest_source: &str,
+) -> Result<Option<ImageAtlas>, Box<dyn Error>> {
+    load_images(manifest_source, |relative| {
+        files
+            .iter()
+            .find_map(|(path, bytes)| (*path == relative).then_some(*bytes))
+            .map(|bytes| bytes.to_vec())
+            .ok_or_else(|| {
+                Box::new(DesktopError(format!(
+                    "bundled asset file does not exist: {relative}"
+                ))) as Box<dyn Error>
+            })
+    })
+}
+
+fn load_images(
+    manifest_source: &str,
+    mut read_asset: impl FnMut(&str) -> Result<Vec<u8>, Box<dyn Error>>,
+) -> Result<Option<ImageAtlas>, Box<dyn Error>> {
     let manifest: Value = serde_json::from_str(manifest_source)?;
     let Some(images) = manifest
         .get("assets")
@@ -38,8 +66,8 @@ pub fn load(root: &Path, manifest_source: &str) -> Result<Option<ImageAtlas>, Bo
             .get("path")
             .and_then(Value::as_str)
             .ok_or_else(|| DesktopError(format!("image asset {id:?} has no path")))?;
-        let path = safe_asset_path(root, relative)?;
-        let mut image = image::ImageReader::open(path)?.decode()?.to_rgba8();
+        let bytes = read_asset(relative)?;
+        let mut image = image::load_from_memory(&bytes)?.to_rgba8();
         let longest = image.width().max(image.height());
         if longest > MAX_IMAGE_DIMENSION {
             let scale = MAX_IMAGE_DIMENSION as f32 / longest as f32;

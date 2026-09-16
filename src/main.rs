@@ -1,4 +1,5 @@
 mod assets;
+mod bundled;
 mod menu;
 mod network;
 mod options;
@@ -27,7 +28,7 @@ const WINDOW_WIDTH: f64 = 1280.0;
 const WINDOW_HEIGHT: f64 = 800.0;
 
 struct DesktopApp {
-    package_root: PathBuf,
+    package_name: String,
     client: ClientSession,
     network: network::BackendClient,
     atlas: Option<assets::ImageAtlas>,
@@ -59,9 +60,46 @@ impl DesktopApp {
         let _ = client.engine_mut().set_username_value(&username);
         let network = network::BackendClient::new(client.game_id()).map_err(DesktopError)?;
         let atlas = assets::load(&package_root, &manifest_source)?;
+        let package_name = package_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("game")
+            .to_owned();
         info!("desktop loaded: game_id={}", client.game_id());
         Ok(Self {
-            package_root,
+            package_name,
+            client,
+            network,
+            atlas,
+            window: None,
+            renderer: None,
+            menu: None,
+            in_game: true,
+            auth_pending: false,
+            username,
+            keys: HashSet::new(),
+            jump_queued: false,
+            pointer: None,
+            camera_active: false,
+            ui_active: false,
+            look_delta: (0.0, 0.0),
+            zoom_delta: 0.0,
+            last_frame: Instant::now(),
+        })
+    }
+
+    fn load_bundled() -> Result<Self, Box<dyn Error>> {
+        let mut client = ClientSession::load(bundled::MANIFEST, bundled::SCRIPT)?;
+        let username = std::env::var("CUBACADABRA_USERNAME")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "Player".to_owned());
+        let _ = client.engine_mut().set_username_value(&username);
+        let network = network::BackendClient::new(client.game_id()).map_err(DesktopError)?;
+        let atlas = assets::load_bundled(bundled::FILES, bundled::MANIFEST)?;
+        info!("desktop loaded bundled game: game_id={}", client.game_id());
+        Ok(Self {
+            package_name: bundled::GAME_ID.to_owned(),
             client,
             network,
             atlas,
@@ -83,11 +121,7 @@ impl DesktopApp {
     }
 
     fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
-        let title = self
-            .package_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("game");
+        let title = &self.package_name;
         let window = event_loop.create_window(
             WindowAttributes::default()
                 .with_title(format!("Cubacadabra — {title}"))
@@ -301,12 +335,7 @@ impl DesktopApp {
 
     fn render_menu(&mut self) {
         let Some(window) = &self.window else { return };
-        let game_name = self
-            .package_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("game")
-            .to_owned();
+        let game_name = self.package_name.clone();
         let Some(menu) = &mut self.menu else { return };
         let prepared = menu.prepare(window, &game_name);
         if let Some(renderer) = &mut self.renderer {
@@ -501,7 +530,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .init();
     debug!("Desktop logging initialized");
     let options = options::parse()?;
-    let mut app = DesktopApp::load(options.package)?;
+    let mut app = match options.package {
+        Some(package) => DesktopApp::load(package)?,
+        None => DesktopApp::load_bundled()?,
+    };
     let event_loop = EventLoop::builder().build()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     event_loop.run_app(&mut app)?;
