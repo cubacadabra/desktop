@@ -1,4 +1,4 @@
-use cubacadabra_builder::{BuildOptions, build_game};
+use cubacadabra_builder::{build_game, BuildOptions};
 use std::{
     env,
     error::Error,
@@ -35,12 +35,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    build_game(&BuildOptions {
+    let build_options = BuildOptions {
         source_root: game_root.join("src"),
         manifest_path: game_root.join("manifest.json"),
         output: output_root.clone(),
         zip_path: None,
-    })?;
+    };
+    // Windows gives build scripts a smaller default stack than Unix hosts.
+    // The builder walks the Luau module graph recursively, so run it on an
+    // explicitly sized stack to keep cross-platform builds equivalent.
+    std::thread::Builder::new()
+        .name("cubacadabra-game-builder".to_owned())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || build_game(&build_options))
+        .map_err(|error| std::io::Error::other(format!("could not start game builder: {error}")))?
+        .join()
+        .map_err(|_| std::io::Error::other("bundled game builder thread panicked"))??;
 
     let mut files = Vec::new();
     collect_files(&output_root, &output_root, &mut files)?;
