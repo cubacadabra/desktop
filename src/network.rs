@@ -15,10 +15,10 @@ use url::Url;
 
 const ENV: &str = "CUBACADABRA_BACKEND_URL";
 const WEB_URL_ENV: &str = "CUBACADABRA_WEB_URL";
-const DEFAULT_URL: &str = match option_env!("CUBACADABRA_BACKEND_URL") {
-    Some(url) => url,
-    None => "http://127.0.0.1:8787",
-};
+#[cfg(debug_assertions)]
+const DEFAULT_URL: &str = "http://127.0.0.1:8787";
+#[cfg(not(debug_assertions))]
+const DEFAULT_URL: &str = "https://api.cubacadabra.com";
 const RECONNECT: Duration = Duration::from_millis(750);
 const POLL: Duration = Duration::from_millis(10);
 const MOVE_INTERVAL: Duration = Duration::from_millis(83);
@@ -614,10 +614,18 @@ fn exchange_browser_code(
 
 #[cfg(test)]
 mod tests {
-    use super::encode_segment;
+    use super::{DEFAULT_URL, encode_segment};
 
     #[test]
     fn encodes_world_path_segments_without_encoding_colons() {
         assert_eq!(encode_segment("arena:7/blue"), "arena:7%2Fblue");
+    }
+
+    #[test]
+    fn build_profile_selects_the_expected_backend() {
+        #[cfg(debug_assertions)]
+        assert_eq!(DEFAULT_URL, "http://127.0.0.1:8787");
+        #[cfg(not(debug_assertions))]
+        assert_eq!(DEFAULT_URL, "https://api.cubacadabra.com");
     }
 }

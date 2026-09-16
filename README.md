@@ -13,11 +13,14 @@ Build a package with the shared tools repository, then run it:
       --source ../first-game \
       --output /tmp/first-game-package
 
-    cargo run --release -- --path /tmp/first-game-package
+    cargo run -- --path /tmp/first-game-package
 
 The player accepts either `--path <package-directory>` or a package directory
-as its first positional argument. The backend defaults to the local Worker;
-set `CUBACADABRA_BACKEND_URL` for another environment.
+as its first positional argument. Debug builds default to the local Worker at
+`http://127.0.0.1:8787` and local sign-in site at `http://127.0.0.1:5173`.
+`cargo run --release` defaults to `https://api.cubacadabra.com` and
+`https://cubacadabra.com/login/`. Set `CUBACADABRA_BACKEND_URL` and/or
+`CUBACADABRA_WEB_URL` to override either environment explicitly.
 
 Controls are `WASD` or the arrow keys to move, `Shift` to sprint, `Space` to
 jump, left-drag to orbit the camera, and the mouse wheel to zoom.
