@@ -35,6 +35,7 @@ struct DesktopApp {
     renderer: Option<Renderer>,
     menu: Option<menu::PlayerMenu>,
     in_game: bool,
+    auth_pending: bool,
     username: String,
     keys: HashSet<KeyCode>,
     jump_queued: bool,
@@ -68,6 +69,7 @@ impl DesktopApp {
             renderer: None,
             menu: None,
             in_game: true,
+            auth_pending: false,
             username,
             keys: HashSet::new(),
             jump_queued: false,
@@ -212,12 +214,14 @@ impl DesktopApp {
                 }
                 network::Event::Disconnected => self.client.transport_disconnected(),
                 network::Event::AuthStarted => {
+                    self.auth_pending = true;
                     if let Some(menu) = &mut self.menu {
                         menu.set_auth_pending(true);
                     }
                     info!("browser sign-in started");
                 }
                 network::Event::AuthCompleted { user } => {
+                    self.auth_pending = false;
                     if let Some(menu) = &mut self.menu {
                         menu.set_auth_pending(false);
                     }
@@ -236,6 +240,7 @@ impl DesktopApp {
                     info!("signed in as {}", user.name);
                 }
                 network::Event::AuthError(message) => {
+                    self.auth_pending = false;
                     if let Some(menu) = &mut self.menu {
                         menu.set_auth_pending(false);
                     }
@@ -259,18 +264,29 @@ impl DesktopApp {
 
     fn drain_ui_events(&mut self) -> bool {
         let mut leave_game = false;
+        let mut sign_in = false;
         while let Some(source) = self.client.poll_ui_event_json() {
-            let Ok(event) = serde_json::from_slice::<serde_json::Value>(&source) else {
-                continue;
-            };
-            if event.get("action").and_then(serde_json::Value::as_str)
-                == Some("shared.leave_game")
-                && event.get("phase").and_then(serde_json::Value::as_str) == Some("activate")
-            {
-                leave_game = true;
+            match shared_ui_action(&source) {
+                Some(SharedUiAction::LeaveGame) => leave_game = true,
+                Some(SharedUiAction::SignIn) => sign_in = true,
+                None => {}
             }
         }
+        if sign_in {
+            self.begin_browser_auth();
+        }
         leave_game
+    }
+
+    fn begin_browser_auth(&mut self) {
+        if self.auth_pending {
+            return;
+        }
+        self.auth_pending = true;
+        if let Some(menu) = &mut self.menu {
+            menu.set_auth_pending(true);
+        }
+        self.network.begin_browser_auth();
     }
 
     fn leave_game(&mut self) {
@@ -305,10 +321,12 @@ impl DesktopApp {
                 self.username = username;
             }
         }
-        if menu.take_sign_in_requested() {
-            self.network.begin_browser_auth();
+        let sign_in_requested = menu.take_sign_in_requested();
+        let start_requested = menu.take_start_requested();
+        if sign_in_requested {
+            self.begin_browser_auth();
         }
-        if menu.take_start_requested() {
+        if start_requested {
             self.in_game = true;
             self.client.request_transport();
             self.dispatch_actions();
@@ -448,6 +466,24 @@ fn axis(keys: &HashSet<KeyCode>, positive: &[KeyCode], negative: &[KeyCode]) -> 
         - f32::from(negative.iter().any(|key| keys.contains(key)))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SharedUiAction {
+    LeaveGame,
+    SignIn,
+}
+
+fn shared_ui_action(source: &[u8]) -> Option<SharedUiAction> {
+    let event = serde_json::from_slice::<serde_json::Value>(source).ok()?;
+    if event.get("phase").and_then(serde_json::Value::as_str) != Some("activate") {
+        return None;
+    }
+    match event.get("action").and_then(serde_json::Value::as_str) {
+        Some("shared.leave_game") => Some(SharedUiAction::LeaveGame),
+        Some("shared.sign_in") => Some(SharedUiAction::SignIn),
+        _ => None,
+    }
+}
+
 fn read_package_file(root: &Path, name: &str) -> Result<String, Box<dyn Error>> {
     fs::read_to_string(root.join(name)).map_err(|error| {
         Box::new(DesktopError(format!(
@@ -468,4 +504,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     event_loop.set_control_flow(ControlFlow::Poll);
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SharedUiAction, shared_ui_action};
+
+    #[test]
+    fn routes_shared_account_actions_on_activation() {
+        assert_eq!(
+            shared_ui_action(br#"{"action":"shared.sign_in","phase":"activate"}"#),
+            Some(SharedUiAction::SignIn)
+        );
+        assert_eq!(
+            shared_ui_action(br#"{"action":"shared.leave_game","phase":"activate"}"#),
+            Some(SharedUiAction::LeaveGame)
+        );
+        assert_eq!(
+            shared_ui_action(br#"{"action":"shared.sign_in","phase":"press"}"#),
+            None
+        );
+    }
 }
