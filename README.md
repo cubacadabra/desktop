@@ -36,6 +36,18 @@ the current package and opens the web control plane for Cube discovery, account,
 avatar, safety, and other profile management. Set `CUBACADABRA_USERNAME` to
 choose the initial local username before signing in.
 
+## Git hooks
+
+Enable the repository's pre-commit hook once per checkout:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+When a commit includes Rust source, the hook runs `cargo fmt --all` and
+auto-stages formatting changes for Rust files that were already staged. Files
+with separate unstaged changes must be staged or discarded before committing.
+
 ## Repository boundaries
 
 Desktop and Studio both depend on the shared Rust engine in `../rust`.
