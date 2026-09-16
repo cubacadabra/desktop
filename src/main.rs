@@ -314,17 +314,19 @@ impl DesktopApp {
                 menu.paint(device, queue, encoder, destination, prepared);
             });
         }
-        if let Some(username) = menu.take_username_changed() {
-            if !self.client.engine_mut().set_username_value(&username) {
-                error!("shared username validation rejected desktop username");
-            } else {
-                self.username = username;
-            }
-        }
         let sign_in_requested = menu.take_sign_in_requested();
+        let web_request = menu.take_web_request();
         let start_requested = menu.take_start_requested();
         if sign_in_requested {
             self.begin_browser_auth();
+        }
+        if let Some(request) = web_request {
+            let page = match request {
+                menu::WebRequest::BrowseGames => network::WebPage::BrowseGames,
+                menu::WebRequest::Account => network::WebPage::Account,
+                menu::WebRequest::About => network::WebPage::About,
+            };
+            self.network.open_web(page);
         }
         if start_requested {
             self.in_game = true;

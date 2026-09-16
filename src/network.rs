@@ -52,6 +52,23 @@ pub struct AuthSession {
     pub user: AuthUser,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebPage {
+    BrowseGames,
+    Account,
+    About,
+}
+
+impl WebPage {
+    fn location(self) -> (&'static str, Option<&'static str>) {
+        match self {
+            Self::BrowseGames => ("/my-cube/", Some("cubes")),
+            Self::Account => ("/my-cube/", None),
+            Self::About => ("/about/", None),
+        }
+    }
+}
+
 struct Move {
     movement: ClientMovement,
 }
@@ -62,6 +79,7 @@ enum Command {
     Send(String),
     Move(Move),
     BeginBrowserAuth,
+    OpenWeb(WebPage),
     Shutdown,
 }
 
@@ -119,6 +137,10 @@ impl BackendClient {
 
     pub fn begin_browser_auth(&self) {
         let _ = self.commands.send(Command::BeginBrowserAuth);
+    }
+
+    pub fn open_web(&self, page: WebPage) {
+        let _ = self.commands.send(Command::OpenWeb(page));
     }
 
     #[allow(dead_code)]
@@ -182,6 +204,11 @@ fn run_worker(
                     let events = events.clone();
                     thread::spawn(move || run_browser_auth(&backend_url, &events, &auth));
                 }
+                Ok(Command::OpenWeb(page)) => match web_page_url(&base_url, page) {
+                    Ok(url) if open_browser(url.as_str()) => {}
+                    Ok(url) => warn!("could not open web page: {url}"),
+                    Err(message) => warn!("could not resolve web page: {message}"),
+                },
                 Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => break 'worker,
                 Err(TryRecvError::Empty) => break,
             }
@@ -451,6 +478,18 @@ fn web_base_url(backend_url: &Url) -> Result<Url, String> {
     Ok(url)
 }
 
+fn web_page_url(backend_url: &Url, page: WebPage) -> Result<Url, String> {
+    Ok(apply_web_page(web_base_url(backend_url)?, page))
+}
+
+fn apply_web_page(mut url: Url, page: WebPage) -> Url {
+    let (path, fragment) = page.location();
+    url.set_path(path);
+    url.set_query(None);
+    url.set_fragment(fragment);
+    url
+}
+
 fn open_browser(url: &str) -> bool {
     #[cfg(target_os = "macos")]
     let mut command = std::process::Command::new("open");
@@ -614,7 +653,8 @@ fn exchange_browser_code(
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_URL, encode_segment};
+    use super::{DEFAULT_URL, WebPage, apply_web_page, encode_segment};
+    use url::Url;
 
     #[test]
     fn encodes_world_path_segments_without_encoding_colons() {
@@ -627,5 +667,22 @@ mod tests {
         assert_eq!(DEFAULT_URL, "http://127.0.0.1:8787");
         #[cfg(not(debug_assertions))]
         assert_eq!(DEFAULT_URL, "https://api.cubacadabra.com");
+    }
+
+    #[test]
+    fn web_control_plane_pages_have_stable_destinations() {
+        let base = Url::parse("https://cubacadabra.com/login/?stale=true").unwrap();
+        assert_eq!(
+            apply_web_page(base.clone(), WebPage::BrowseGames).as_str(),
+            "https://cubacadabra.com/my-cube/#cubes"
+        );
+        assert_eq!(
+            apply_web_page(base.clone(), WebPage::Account).as_str(),
+            "https://cubacadabra.com/my-cube/"
+        );
+        assert_eq!(
+            apply_web_page(base, WebPage::About).as_str(),
+            "https://cubacadabra.com/about/"
+        );
     }
 }

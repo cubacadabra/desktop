@@ -1,10 +1,14 @@
-use cubacadabra_app::{
-    AppAction, AppModel, AppSnapshot, UsernameValidationError, validate_account_username,
-};
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor, wgpu};
 use egui_winit::State as EguiState;
 use std::mem;
 use winit::{event::WindowEvent, window::Window};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WebRequest {
+    BrowseGames,
+    Account,
+    About,
+}
 
 pub(crate) struct PreparedMenu {
     paint_jobs: Vec<egui::ClippedPrimitive>,
@@ -16,14 +20,11 @@ pub(crate) struct PlayerMenu {
     state: EguiState,
     renderer: Renderer,
     pending_textures_delta: egui::TexturesDelta,
-    app: AppModel,
-    username: String,
-    username_status: Option<String>,
-    editing_username: bool,
+    signed_in_name: Option<String>,
     start_requested: bool,
     sign_in_requested: bool,
+    web_request: Option<WebRequest>,
     auth_pending: bool,
-    username_changed: Option<String>,
 }
 
 impl PlayerMenu {
@@ -41,19 +42,6 @@ impl PlayerMenu {
             window.theme(),
             Some(4_096),
         );
-        let username = std::env::var("CUBACADABRA_USERNAME")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "Player".to_owned());
-        let mut app = AppModel::default();
-        app.dispatch(AppAction::ReplaceSession {
-            account_id: std::env::var("CUBACADABRA_ACCOUNT_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty()),
-            username: Some(username.clone()),
-            body_id: None,
-            date_of_birth: None,
-        });
         Self {
             context,
             state,
@@ -63,14 +51,11 @@ impl PlayerMenu {
                 RendererOptions::default(),
             ),
             pending_textures_delta: egui::TexturesDelta::default(),
-            app,
-            username,
-            username_status: None,
-            editing_username: false,
+            signed_in_name: None,
             start_requested: false,
             sign_in_requested: false,
+            web_request: None,
             auth_pending: false,
-            username_changed: None,
         }
     }
 
@@ -82,8 +67,7 @@ impl PlayerMenu {
         let input = self.state.take_egui_input(window);
         let context = self.context.clone();
         let output = context.run_ui(input, |context| {
-            egui::CentralPanel::default()
-                .show(context, |ui| self.show(ui, game_name));
+            egui::CentralPanel::default().show(context, |ui| self.show(ui, game_name));
         });
         self.state
             .handle_platform_output(window, output.platform_output);
@@ -152,12 +136,12 @@ impl PlayerMenu {
         mem::take(&mut self.start_requested)
     }
 
-    pub(crate) fn take_username_changed(&mut self) -> Option<String> {
-        self.username_changed.take()
+    pub(crate) fn take_sign_in_requested(&mut self) -> bool {
+        mem::take(&mut self.sign_in_requested)
     }
 
-    pub(crate) fn take_sign_in_requested(&mut self) -> bool {
-        std::mem::take(&mut self.sign_in_requested)
+    pub(crate) fn take_web_request(&mut self) -> Option<WebRequest> {
+        self.web_request.take()
     }
 
     pub(crate) fn set_auth_pending(&mut self, pending: bool) {
@@ -165,18 +149,14 @@ impl PlayerMenu {
     }
 
     pub(crate) fn set_authenticated(&mut self, user: &crate::network::AuthUser) {
-        let username = user.username.clone().unwrap_or_else(|| user.name.clone());
-        self.username = username.clone();
-        self.app.dispatch(AppAction::ReplaceSession {
-            account_id: Some(user.id.clone()),
-            username: Some(username),
-            body_id: None,
-            date_of_birth: None,
-        });
+        self.signed_in_name = Some(
+            user.username
+                .clone()
+                .unwrap_or_else(|| user.name.clone()),
+        );
     }
 
     fn show(&mut self, ui: &mut egui::Ui, game_name: &str) {
-        let snapshot = self.app.snapshot();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -198,38 +178,27 @@ impl PlayerMenu {
                         menu_row(ui, "01", game_name, "Continue playing this cube", true, || {
                             self.start_requested = true;
                         });
+                        ui.separator();
+                        menu_row(
+                            ui,
+                            "+",
+                            "Browse games on cubacadabra.com",
+                            "Discover more Cubes on the web",
+                            true,
+                            || self.web_request = Some(WebRequest::BrowseGames),
+                        );
                     });
                     ui.add_space(28.0);
                     section_label(ui, "ACCOUNT");
                     egui::Frame::group(ui.style()).show(ui, |ui| {
-                        if snapshot.account_id.is_some() {
-                            let label = snapshot
-                                .profile
-                                .username
-                                .as_deref()
-                                .unwrap_or(&self.username);
-                            menu_row(ui, "@", "Change your username", label, true, || {
-                                self.editing_username = true;
-                                self.username_status = None;
-                                self.app.dispatch(AppAction::BeginUsernameEdit {});
-                            });
-                            ui.separator();
+                        if let Some(name) = self.signed_in_name.clone() {
                             menu_row(
                                 ui,
-                                "♙",
-                                "Choose your morph",
-                                "Customize your character",
-                                false,
-                                || {},
-                            );
-                            ui.separator();
-                            menu_row(
-                                ui,
-                                "!",
-                                "Block or unblock players",
-                                "Players & safety",
-                                false,
-                                || {},
+                                "@",
+                                &format!("Signed in as {name}"),
+                                "Account & avatar on cubacadabra.com",
+                                true,
+                                || self.web_request = Some(WebRequest::Account),
                             );
                         } else {
                             menu_row(
@@ -239,61 +208,25 @@ impl PlayerMenu {
                                 "Manage your account",
                                 !self.auth_pending,
                                 || {
-                                self.sign_in_requested = true;
+                                    self.sign_in_requested = true;
                                 },
                             );
                         }
                     });
-                    if self.editing_username {
-                        self.username_editor(ui, &snapshot);
-                    }
                     ui.add_space(28.0);
                     section_label(ui, "ABOUT");
                     egui::Frame::group(ui.style()).show(ui, |ui| {
-                        menu_row(ui, "i", "About cubacadabra", "Learn more", false, || {});
+                        menu_row(
+                            ui,
+                            "i",
+                            "About cubacadabra",
+                            "Learn more on the web",
+                            true,
+                            || self.web_request = Some(WebRequest::About),
+                        );
                     });
                 });
             });
-    }
-
-    fn username_editor(&mut self, ui: &mut egui::Ui, snapshot: &AppSnapshot) {
-        ui.add_space(10.0);
-        ui.label("Choose a name other players can find you by.");
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut self.username)
-                .hint_text("Your username")
-                .desired_width(300.0),
-        );
-        if response.changed() {
-            self.app.dispatch(AppAction::UsernameChanged {
-                value: self.username.clone(),
-            });
-            self.username_status = None;
-        }
-        ui.label("Use 2–24 letters, numbers, _ or -.");
-        if let Some(status) = &self.username_status {
-            ui.colored_label(egui::Color32::from_rgb(190, 70, 60), status);
-        } else if let Some(feedback) = &snapshot.profile.username_feedback {
-            ui.label(&feedback.message);
-        }
-        ui.horizontal(|ui| {
-            if ui.button("Save username").clicked() {
-                match validate_account_username(&self.username) {
-                    Ok(username) => {
-                        self.username = username;
-                        self.username_changed = Some(self.username.clone());
-                        self.username_status =
-                            Some("Username updated for this session.".to_owned());
-                        self.editing_username = false;
-                    }
-                    Err(error) => self.username_status = Some(username_error(error)),
-                }
-            }
-            if ui.button("Cancel").clicked() {
-                self.editing_username = false;
-                self.username_status = None;
-            }
-        });
     }
 }
 
@@ -327,8 +260,4 @@ fn menu_row(
     if response.inner.clicked() {
         on_click();
     }
-}
-
-fn username_error(error: UsernameValidationError) -> String {
-    error.message().to_owned()
 }

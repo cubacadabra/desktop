@@ -1,215 +1,153 @@
-I’d make the desktop Player a **real fourth client**, not a thin game window that punts its core shell to the website.
+# Desktop Player direction
 
-The clean model is:
+Desktop is the focused native game runtime for macOS, Windows, and Linux. The
+website is the platform control plane while the desktop app is young.
 
 ```text
-                         cubacadabra-app
-                    shared semantic app state
-              account / catalog / avatar / safety
-                              │
-          ┌───────────────────┼───────────────────┐
-          │                   │                   │
-         Web                Mobile              Desktop
-          │              iOS + Android       macOS/Win/Linux
-          │                   │                   │
-         DOM           SwiftUI / Compose         egui
+cubacadabra.com
+├── Cube discovery
+├── account and username
+├── Morph/avatar editing
+├── safety and blocked players
+├── subscriptions
+└── Play
+      ↓
+Cubacadabra Desktop
+├── launch/loading/errors
+├── native input and rendering
+├── multiplayer session
+├── in-game return/home
+└── resume or choose another Cube
 ```
 
-You already built `cubacadabra-app` specifically so username/profile/catalog/safety behavior does not get independently reimplemented by every host. The host owns presentation and OS integration while Rust owns the semantic state machine.  Desktop Player is almost the perfect additional consumer of that architecture.
+This is a deliberate product boundary, not a consequence of browser-based
+login. Browser login is only the authentication ceremony. After its localhost
+callback and code exchange, Desktop owns the authenticated runtime session and
+uses its access token for the game WebSocket.
 
-So I would have the desktop app own these **inside the app**:
+## Native Desktop responsibilities
 
-* home / game discovery and “continue playing”
-* selecting and launching a Cube
-* account summary
-* changing username/profile basics
-* avatar/Morph selection and 3D preview
-* blocked users/basic safety
-* app settings
-* login/logout state
-* package download/update state
-* game launch/loading/error UX
+- Load and validate an installed game package.
+- Render and run the shared Rust game client.
+- Connect authenticated multiplayer sessions.
+- Present launch, loading, connection, and package errors.
+- Return from a game to a small native player menu.
+- Resume the current Cube without a browser round trip.
+- Open the web catalog, account, and informational surfaces.
+- Eventually accept validated Cube launch deep links.
+- Keep basic runtime settings that directly affect native play.
 
-And implement that desktop shell in Rust/egui, backed by `cubacadabra-app` and `cubacadabra-client`.
+## Web control-plane responsibilities
 
-### Where I would still send users to the web
+- Browse and discover Cubes.
+- Username and account details.
+- Morph/avatar selection.
+- Blocked players and safety controls.
+- Password, email, verification, and recovery.
+- Parent administration.
+- Subscription and billing.
+- Legal, privacy, and support.
+- Creator and administrative tools.
 
-There is no need for ideological purity. Some uncommon or browser-native flows can initially leave the app:
+These flows should only move native after their shared `cubacadabra-app`
+effects, backend persistence, loading, error, and conflict behavior are
+complete. Desktop should not present account controls that only mutate local
+session state.
+
+## Current native menu
 
 ```text
-Desktop Player                         Website
+CUBACADABRA
 
-browse/play games            ✓
-avatar                       ✓
-username                     ✓
-settings                     ✓
-normal account management    ✓
+[ Continue playing ]
+[ Browse games on cubacadabra.com ]
 
-email verification                    → web
-password recovery                      → web
-legal/privacy pages                    → web
-subscription checkout                  → web, where permitted
-creator dashboards                     → web
-parent administration                  → probably web initially
-deep billing history                   → web
-unusual support/admin flows            → web
+Signed out:
+[ Sign in ]
+
+Signed in:
+Signed in as <username>
+[ Account & avatar on cubacadabra.com ]
+
+[ About cubacadabra ]
 ```
 
-That is common desktop-app behavior and doesn't make the app feel incomplete.
-
-The test I'd use is:
-
-> **Does a normal player expect to do this while deciding what to play or how they appear in games?**
-
-If yes, it belongs in the desktop Player.
-
-Having to launch a browser merely to change your avatar or pick another game would feel noticeably cheap.
-
----
-
-There's another architectural reason I like this: desktop becomes your **cleanest host**.
-
-Unlike iOS and Android, desktop Player can consume your Rust crates directly:
+Debug builds open the local web app and backend:
 
 ```text
-cubacadabra-player
-    │
-    ├── cubacadabra-app
-    ├── cubacadabra-client
-    ├── cubacadabra-engine
-    └── renderer
+Web:     http://127.0.0.1:5173
+Backend: http://127.0.0.1:8787
 ```
 
-No:
+Release builds open production:
 
 ```text
-C ABI
-JNI
-Swift bridge
-WASM
-JavaScript adapter
+Web:     https://cubacadabra.com
+Backend: https://api.cubacadabra.com
 ```
 
-So:
+`CUBACADABRA_WEB_URL` and `CUBACADABRA_BACKEND_URL` remain explicit runtime
+overrides.
+
+## Authentication
 
 ```text
-macOS / Windows / Linux
-            │
-           egui
-            │
-     cubacadabra-app
-            │
-     cubacadabra-client
-            │
-    cubacadabra-engine
-```
-
-That should arguably become the **reference implementation of a complete native client**.
-
-Studio would share plenty of lower-level infrastructure but remain a different product:
-
-```text
-                     Shared Rust
-                         │
-           ┌─────────────┴─────────────┐
-           │                           │
-        Studio                       Player
-           │                           │
-     creator shell                 player shell
-     project editing               catalog/home
-     asset import                  account/avatar
-     test sessions                 game launcher
-     Codex                         social/safety
-           │                           │
- macOS / Win / Linux          macOS / Win / Linux
-```
-
-I would **not** try to turn Studio itself into the desktop Player.
-
-### Login can still use the browser
-
-This is one place where sending someone out to the browser is totally fine.
-
-Something like:
-
-```text
-Desktop Player
-      │
-      │ Sign in
-      ▼
+Desktop
+   ↓ opens /login/
 system browser
-      │
-Cubacadabra / Google / whatever
-      │
- loopback callback / app link
-      ▼
-Desktop Player authenticated
+   ↓ authenticated redirect
+localhost callback with state + code
+   ↓ code exchange
+Desktop access/refresh token session
+   ↓
+authenticated game WebSocket
 ```
 
-Studio already has a browser-based authentication pattern conceptually. The desktop Player can use the same general host-owned auth approach; the shared Rust app state shouldn't become an OAuth implementation.
+Before production distribution, authentication still needs:
 
-### One caution about egui
+- OS credential storage instead of memory-only tokens.
+- Access-token expiry handling and refresh-token rotation.
+- Logout and credential deletion.
+- Clear expired-session recovery.
+- Tests for callback validation and refresh failure.
 
-I would use egui, but don't make:
+## Next platform step: launch deep links
 
-> “everything must be custom-drawn because Rust”
-
-a rule.
-
-For desktop OS-owned things, still use native integration:
-
-* file/open dialogs if ever needed
-* URL launching
-* clipboard
-* notifications
-* accessibility hooks
-* system menus where appropriate
-* credential/keychain storage
-* browser login
-* window lifecycle
-
-The actual **Cubacadabra application UI** can be shared egui.
-
-That is essentially the same boundary you've already chosen for Studio.
-
----
-
-So I’d update the architecture mentally to four player clients:
+The website should eventually launch Desktop with a narrow protocol such as:
 
 ```text
-PLAYER CLIENTS
-
-1. Web
-   DOM + WASM
-
-2. iOS
-   SwiftUI + C/Rust
-
-3. Android
-   Compose + JNI/Rust
-
-4. Desktop
-   egui + direct Rust
-   ├── macOS
-   ├── Windows
-   └── Linux
+cubacadabra://play/<cube-id>
 ```
 
-Not six separate clients. **One desktop client with three OS targets.**
+The handler must:
 
-And then:
+- accept only the `play` action;
+- validate and length-limit the Cube identifier;
+- reject arbitrary URLs, paths, query-driven commands, and credentials;
+- resolve package metadata through the configured Cubacadabra service;
+- verify downloaded package integrity before launch;
+- show a native confirmation/error surface when launch cannot continue;
+- support macOS, Windows, and Linux registration;
+- let the website fall back to install/download instructions.
+
+Until that protocol and package retrieval path are ready, Desktop resumes the
+package supplied on its command line and the web catalog opens in the browser.
+
+## Studio boundary
+
+Studio remains a separate creator product. Desktop and Studio can share Rust
+engine, renderer, networking, authentication, and OS-integration utilities,
+but they should not share a product shell.
 
 ```text
-CREATOR CLIENT
-
-Cubacadabra Studio
-   egui + direct Rust
-   ├── macOS
-   ├── Windows
-   └── Linux
+Shared Rust/runtime infrastructure
+            │
+      ┌─────┴─────┐
+      │           │
+   Studio      Desktop
+ creator UI   player runtime
 ```
 
-That distinction makes the entire product architecture much clearer.
-
-I would only punt peripheral account-management complexity to the website. **Game selection, avatar, username, settings, and the normal player shell should absolutely be first-class desktop UI.**
-
+The architecture can grow toward a fuller native client later. That should be
+driven by player value and complete shared flows, not by duplicating web pages
+in egui for architectural symmetry.
