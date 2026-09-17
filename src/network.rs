@@ -611,6 +611,18 @@ fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePackage, String
                 .collect::<std::collections::HashSet<_>>()
         })
         .unwrap_or_default();
+    let model_paths = manifest_value
+        .get("assets")
+        .and_then(|assets| assets.get("models"))
+        .and_then(serde_json::Value::as_object)
+        .map(|models| {
+            models
+                .values()
+                .filter_map(|model| model.get("path").and_then(serde_json::Value::as_str))
+                .map(str::to_owned)
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
 
     let mut package_files = Vec::new();
     for file in files {
@@ -643,7 +655,7 @@ fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePackage, String
                 "the cube package checksum did not match for {path}"
             ));
         }
-        if image_paths.contains(path) {
+        if image_paths.contains(path) || model_paths.contains(path) {
             package_files.push((path.to_owned(), bytes));
         }
     }

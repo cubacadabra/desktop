@@ -32,6 +32,7 @@ struct DesktopApp {
     client: ClientSession,
     network: network::BackendClient,
     atlas: Option<assets::ImageAtlas>,
+    models: Vec<assets::ModelAsset>,
     window: Option<Window>,
     renderer: Option<Renderer>,
     menu: Option<menu::PlayerMenu>,
@@ -53,6 +54,7 @@ struct PackageContent {
     manifest: String,
     script: String,
     atlas: Option<assets::ImageAtlas>,
+    models: Vec<assets::ModelAsset>,
 }
 
 impl DesktopApp {
@@ -60,6 +62,7 @@ impl DesktopApp {
         let manifest_source = read_package_file(&package_root, "manifest.json")?;
         let script_source = read_package_file(&package_root, "game.luau")?;
         let atlas = assets::load(&package_root, &manifest_source)?;
+        let models = assets::load_models(&package_root, &manifest_source)?;
         let package_name = package_root
             .file_name()
             .and_then(|name| name.to_str())
@@ -71,6 +74,7 @@ impl DesktopApp {
                 manifest: manifest_source,
                 script: script_source,
                 atlas,
+                models,
             },
             true,
         )
@@ -86,6 +90,7 @@ impl DesktopApp {
                 manifest: package.manifest.to_owned(),
                 script: package.script.to_owned(),
                 atlas: assets::load_bundled(package.files, package.manifest)?,
+                models: assets::load_bundled_models(package.files, package.manifest)?,
             },
             true,
         )
@@ -105,6 +110,7 @@ impl DesktopApp {
             client,
             network,
             atlas: package.atlas,
+            models: package.models,
             window: None,
             renderer: None,
             menu: None,
@@ -148,6 +154,13 @@ impl DesktopApp {
             return Err(Box::new(DesktopError(
                 "the game's image atlas could not be uploaded".into(),
             )));
+        }
+        for model in &self.models {
+            renderer
+                .register_world_mesh(&model.id, &model.bytes)
+                .map_err(|error| {
+                    DesktopError(format!("world model {} was rejected: {error}", model.id))
+                })?;
         }
         let player_menu = menu::PlayerMenu::new(&window, &renderer);
         self.window = Some(window);
@@ -372,6 +385,7 @@ impl DesktopApp {
             manifest: package.manifest.to_owned(),
             script: package.script.to_owned(),
             atlas: assets::load_bundled(package.files, package.manifest)?,
+            models: assets::load_bundled_models(package.files, package.manifest)?,
         })
     }
 
@@ -380,11 +394,13 @@ impl DesktopApp {
         package: network::RemoteGamePackage,
     ) -> Result<(), Box<dyn Error>> {
         let atlas = assets::load_from_files(&package.files, &package.manifest)?;
+        let models = assets::load_models_from_files(&package.files, &package.manifest)?;
         self.install_package(PackageContent {
             id: package.id,
             manifest: package.manifest,
             script: package.script,
             atlas,
+            models,
         })
     }
 
@@ -408,11 +424,20 @@ impl DesktopApp {
         self.network = network;
         self.package_name = package.id;
         self.atlas = package.atlas;
+        self.models = package.models;
         if let Some(window) = &self.window {
             window.set_title(&format!("Cubacadabra — {}", self.package_name));
         }
         self.update_viewport();
         if let Some(renderer) = &mut self.renderer {
+            renderer.clear_world_meshes();
+            for model in &self.models {
+                renderer
+                    .register_world_mesh(&model.id, &model.bytes)
+                    .map_err(|error| {
+                        DesktopError(format!("world model {} was rejected: {error}", model.id))
+                    })?;
+            }
             if let Some(atlas) = &self.atlas {
                 if !renderer.set_package_image_atlas(
                     atlas.width,

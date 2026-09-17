@@ -20,6 +20,12 @@ pub struct ImageAtlas {
     pub regions: BTreeMap<String, [f32; 4]>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ModelAsset {
+    pub id: String,
+    pub bytes: Vec<u8>,
+}
+
 pub fn load(root: &Path, manifest_source: &str) -> Result<Option<ImageAtlas>, Box<dyn Error>> {
     load_images(manifest_source, |relative| {
         let path = safe_asset_path(root, relative)?;
@@ -58,6 +64,83 @@ pub fn load_from_files(
                 ))) as Box<dyn Error>
             })
     })
+}
+
+pub fn load_models(root: &Path, manifest_source: &str) -> Result<Vec<ModelAsset>, Box<dyn Error>> {
+    load_models_with(manifest_source, |relative| {
+        let path = safe_asset_path(root, relative)?;
+        Ok(fs::read(path)?)
+    })
+}
+
+pub fn load_bundled_models(
+    files: &[(&str, &[u8])],
+    manifest_source: &str,
+) -> Result<Vec<ModelAsset>, Box<dyn Error>> {
+    load_models_with(manifest_source, |relative| {
+        files
+            .iter()
+            .find_map(|(path, bytes)| (*path == relative).then_some(*bytes))
+            .map(|bytes| bytes.to_vec())
+            .ok_or_else(|| {
+                Box::new(DesktopError(format!(
+                    "bundled asset file does not exist: {relative}"
+                ))) as Box<dyn Error>
+            })
+    })
+}
+
+pub fn load_models_from_files(
+    files: &[(String, Vec<u8>)],
+    manifest_source: &str,
+) -> Result<Vec<ModelAsset>, Box<dyn Error>> {
+    load_models_with(manifest_source, |relative| {
+        files
+            .iter()
+            .find_map(|(path, bytes)| (path == relative).then_some(bytes.clone()))
+            .ok_or_else(|| {
+                Box::new(DesktopError(format!(
+                    "remote package asset file does not exist: {relative}"
+                ))) as Box<dyn Error>
+            })
+    })
+}
+
+fn load_models_with(
+    manifest_source: &str,
+    mut read_asset: impl FnMut(&str) -> Result<Vec<u8>, Box<dyn Error>>,
+) -> Result<Vec<ModelAsset>, Box<dyn Error>> {
+    let manifest: Value = serde_json::from_str(manifest_source)?;
+    let Some(models) = manifest
+        .get("assets")
+        .and_then(|assets| assets.get("models"))
+        .and_then(Value::as_object)
+    else {
+        return Ok(Vec::new());
+    };
+    if models.len() > 64 {
+        return Err(Box::new(DesktopError(
+            "a game package may declare at most 64 world models".into(),
+        )));
+    }
+    models
+        .iter()
+        .map(|(id, definition)| {
+            let path = definition
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DesktopError(format!("model asset {id:?} has no path")))?;
+            if !path.to_ascii_lowercase().ends_with(".glb") {
+                return Err(Box::new(DesktopError(format!(
+                    "model asset {id:?} must be an embedded .glb file"
+                ))) as Box<dyn Error>);
+            }
+            Ok(ModelAsset {
+                id: id.clone(),
+                bytes: read_asset(path)?,
+            })
+        })
+        .collect()
 }
 
 fn load_images(
