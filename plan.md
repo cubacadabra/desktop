@@ -59,8 +59,9 @@ session state.
 ```text
 CUBACADABRA
 
-[ Continue playing ]
-[ Browse games on cubacadabra.com ]
+[ First Game ]
+[ Second Game ]
+[ List cubes ]
 
 Signed out:
 [ Sign in ]

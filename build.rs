@@ -1,4 +1,4 @@
-use cubacadabra_builder::{build_game, BuildOptions};
+use cubacadabra_builder::{BuildOptions, build_game};
 use std::{
     env,
     error::Error,
@@ -11,20 +11,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let workspace_root = manifest_dir
         .parent()
         .ok_or("desktop repository has no workspace parent")?;
-    let game_root = workspace_root.join("first-game");
+    let game_roots = [
+        ("first-game", workspace_root.join("first-game")),
+        ("second-game", workspace_root.join("second-game")),
+    ];
     let tools_root = workspace_root.join("tools");
-    let output_root = PathBuf::from(env::var("OUT_DIR")?).join("first-game-package");
+    let output_root = PathBuf::from(env::var("OUT_DIR")?).join("game-packages");
 
-    for path in [&game_root, &tools_root] {
-        println!("cargo:rerun-if-changed={}", path.display());
+    for (_, game_root) in &game_roots {
+        println!("cargo:rerun-if-changed={}", game_root.display());
     }
-    if !game_root.join("manifest.json").is_file() || !game_root.join("src/main.luau").is_file() {
-        return Err(format!(
-            "the bundled first-game project is missing: {}",
-            game_root.display()
-        )
-        .into());
-    }
+    println!("cargo:rerun-if-changed={}", tools_root.display());
     if !tools_root.join("Cargo.toml").is_file()
         || !tools_root.join("crates/cli/Cargo.toml").is_file()
     {
@@ -35,53 +32,68 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
-    let build_options = BuildOptions {
-        source_root: game_root.join("src"),
-        manifest_path: game_root.join("manifest.json"),
-        output: output_root.clone(),
-        zip_path: None,
-    };
-    // Windows gives build scripts a smaller default stack than Unix hosts.
-    // The builder walks the Luau module graph recursively, so run it on an
-    // explicitly sized stack to keep cross-platform builds equivalent.
-    std::thread::Builder::new()
-        .name("cubacadabra-game-builder".to_owned())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(move || build_game(&build_options))
-        .map_err(|error| std::io::Error::other(format!("could not start game builder: {error}")))?
-        .join()
-        .map_err(|_| std::io::Error::other("bundled game builder thread panicked"))??;
-
-    let mut files = Vec::new();
-    collect_files(&output_root, &output_root, &mut files)?;
-    files.sort();
-    if !files.iter().any(|path| path == "manifest.json")
-        || !files.iter().any(|path| path == "game.luau")
-    {
-        return Err(
-            "the bundled first-game package did not contain manifest.json and game.luau".into(),
-        );
-    }
-
-    let generated = files
-        .iter()
-        .map(|path| {
-            let include_path = format!(
-                "concat!(env!(\"OUT_DIR\"), \"/first-game-package/{}\")",
-                path
-            );
-            format!(
-                "    ({path:?}, include_bytes!({include_path})),\n",
-                path = path,
-                include_path = include_path
+    let mut packages = String::new();
+    for (game_id, game_root) in &game_roots {
+        if !game_root.join("manifest.json").is_file() || !game_root.join("src/main.luau").is_file()
+        {
+            return Err(format!(
+                "the bundled {game_id} project is missing manifest.json or src/main.luau: {}",
+                game_root.display()
             )
-        })
-        .collect::<String>();
+            .into());
+        }
+
+        let package_output = output_root.join(game_id);
+        let build_options = BuildOptions {
+            source_root: game_root.join("src"),
+            manifest_path: game_root.join("manifest.json"),
+            output: package_output.clone(),
+            zip_path: None,
+        };
+        // Windows gives build scripts a smaller default stack than Unix hosts.
+        // The builder walks the Luau module graph recursively, so run it on an
+        // explicitly sized stack to keep cross-platform builds equivalent.
+        std::thread::Builder::new()
+            .name(format!("cubacadabra-{game_id}-builder"))
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || build_game(&build_options))
+            .map_err(|error| {
+                std::io::Error::other(format!("could not start game builder: {error}"))
+            })?
+            .join()
+            .map_err(|_| std::io::Error::other("bundled game builder thread panicked"))??;
+
+        let mut files = Vec::new();
+        collect_files(&package_output, &package_output, &mut files)?;
+        files.sort();
+        if !files.iter().any(|path| path == "manifest.json")
+            || !files.iter().any(|path| path == "game.luau")
+        {
+            return Err(format!(
+                "the bundled {game_id} package did not contain manifest.json and game.luau"
+            )
+            .into());
+        }
+
+        let generated_files = files
+            .iter()
+            .map(|path| {
+                let include_path =
+                    format!("concat!(env!(\"OUT_DIR\"), \"/game-packages/{game_id}/{path}\")");
+                format!(
+                    "        ({path:?}, include_bytes!({include_path})),\n",
+                    path = path,
+                    include_path = include_path
+                )
+            })
+            .collect::<String>();
+        packages.push_str(&format!(
+            "    BundledPackage {{\n        id: {game_id:?},\n        manifest: include_str!(concat!(env!(\"OUT_DIR\"), \"/game-packages/{game_id}/manifest.json\")),\n        script: include_str!(concat!(env!(\"OUT_DIR\"), \"/game-packages/{game_id}/game.luau\")),\n        files: &[\n{generated_files}        ],\n    }},\n"
+        ));
+    }
     let source = format!(
-        "pub const GAME_ID: &str = \"first-game\";\n\
-         pub const MANIFEST: &str = include_str!(concat!(env!(\"OUT_DIR\"), \"/first-game-package/manifest.json\"));\n\
-         pub const SCRIPT: &str = include_str!(concat!(env!(\"OUT_DIR\"), \"/first-game-package/game.luau\"));\n\
-         pub static FILES: &[(&str, &[u8])] = &[\n{generated}         ];\n"
+        "pub struct BundledPackage {{\n    pub id: &'static str,\n    pub manifest: &'static str,\n    pub script: &'static str,\n    pub files: &'static [(&'static str, &'static [u8])],\n}}\n\
+         pub static PACKAGES: &[BundledPackage] = &[\n{packages}];\n"
     );
     fs::write(
         PathBuf::from(env::var("OUT_DIR")?).join("bundled_game.rs"),

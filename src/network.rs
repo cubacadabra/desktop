@@ -1,16 +1,18 @@
 use cubacadabra_client::ClientMovement;
 use log::{debug, info, warn};
+use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
     io::{ErrorKind, Read, Write},
     net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex, mpsc::{self, Receiver, Sender, TryRecvError}},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender, TryRecvError},
+    },
     thread,
     time::{Duration, Instant},
 };
-use tungstenite::{
-    ClientRequestBuilder, Message, WebSocket, connect, stream::MaybeTlsStream,
-};
+use tungstenite::{ClientRequestBuilder, Message, WebSocket, connect, stream::MaybeTlsStream};
 use url::Url;
 
 const ENV: &str = "CUBACADABRA_BACKEND_URL";
@@ -33,6 +35,26 @@ pub enum Event {
     AuthStarted,
     AuthCompleted { user: AuthUser },
     AuthError(String),
+    CatalogLoaded(Vec<CatalogEntry>),
+    CatalogError(String),
+    PackageLoaded(RemoteGamePackage),
+    PackageError { game_id: String, message: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct CatalogEntry {
+    pub id: String,
+    pub display_name: String,
+    pub version: String,
+    pub package_url: Url,
+}
+
+#[derive(Debug)]
+pub struct RemoteGamePackage {
+    pub id: String,
+    pub manifest: String,
+    pub script: String,
+    pub files: Vec<(String, Vec<u8>)>,
 }
 
 #[allow(dead_code)]
@@ -54,7 +76,6 @@ pub struct AuthSession {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebPage {
-    BrowseGames,
     Account,
     About,
 }
@@ -62,7 +83,6 @@ pub enum WebPage {
 impl WebPage {
     fn location(self) -> (&'static str, Option<&'static str>) {
         match self {
-            Self::BrowseGames => ("/my-cube/", Some("cubes")),
             Self::Account => ("/my-cube/", None),
             Self::About => ("/about/", None),
         }
@@ -80,6 +100,8 @@ enum Command {
     Move(Move),
     BeginBrowserAuth,
     OpenWeb(WebPage),
+    LoadCatalog,
+    LoadPackage(CatalogEntry),
     Shutdown,
 }
 
@@ -141,6 +163,20 @@ impl BackendClient {
 
     pub fn open_web(&self, page: WebPage) {
         let _ = self.commands.send(Command::OpenWeb(page));
+    }
+
+    pub fn load_catalog(&self) {
+        let _ = self.commands.send(Command::LoadCatalog);
+    }
+
+    pub fn load_package(&self, entry: CatalogEntry) {
+        let _ = self.commands.send(Command::LoadPackage(entry));
+    }
+
+    pub fn set_auth_session(&self, session: AuthSession) {
+        if let Ok(mut current) = self.auth.lock() {
+            *current = Some(session);
+        }
     }
 
     #[allow(dead_code)]
@@ -209,6 +245,32 @@ fn run_worker(
                     Ok(url) => warn!("could not open web page: {url}"),
                     Err(message) => warn!("could not resolve web page: {message}"),
                 },
+                Ok(Command::LoadCatalog) => {
+                    let backend_url = base_url.clone();
+                    let events = events.clone();
+                    thread::spawn(move || match load_catalog(&backend_url) {
+                        Ok(entries) => {
+                            let _ = events.send(Event::CatalogLoaded(entries));
+                        }
+                        Err(message) => {
+                            let _ = events.send(Event::CatalogError(message));
+                        }
+                    });
+                }
+                Ok(Command::LoadPackage(entry)) => {
+                    let events = events.clone();
+                    thread::spawn(move || {
+                        let game_id = entry.id.clone();
+                        match load_remote_package(&entry) {
+                            Ok(package) => {
+                                let _ = events.send(Event::PackageLoaded(package));
+                            }
+                            Err(message) => {
+                                let _ = events.send(Event::PackageError { game_id, message });
+                            }
+                        }
+                    });
+                }
                 Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => break 'worker,
                 Err(TryRecvError::Empty) => break,
             }
@@ -265,7 +327,9 @@ fn run_worker(
                 Ok(()) => {
                     pending.pop_front();
                 }
-                Err(tungstenite::Error::Io(error)) if error.kind() == ErrorKind::WouldBlock => break,
+                Err(tungstenite::Error::Io(error)) if error.kind() == ErrorKind::WouldBlock => {
+                    break;
+                }
                 Err(_) => {
                     failed = true;
                     break;
@@ -294,7 +358,8 @@ fn run_worker(
                         last_sent_move = Some(json);
                         last_move_at = now;
                     }
-                    Err(tungstenite::Error::Io(error)) if error.kind() == ErrorKind::WouldBlock => {}
+                    Err(tungstenite::Error::Io(error)) if error.kind() == ErrorKind::WouldBlock => {
+                    }
                     Err(_) => failed = true,
                 }
             }
@@ -316,7 +381,9 @@ fn run_worker(
                         break;
                     }
                     Ok(_) => {}
-                    Err(tungstenite::Error::Io(error)) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(tungstenite::Error::Io(error)) if error.kind() == ErrorKind::WouldBlock => {
+                        break;
+                    }
                     Err(_) => {
                         failed = true;
                         break;
@@ -404,8 +471,263 @@ fn http_url(base: &Url, path: &str) -> Result<Url, String> {
     url.set_path("");
     url.set_query(None);
     url.set_fragment(None);
-    Url::parse(&format!("{}{}", url.as_str().trim_end_matches('/'), request_path))
-        .map_err(|error| format!("could not build HTTP URL: {error}"))
+    Url::parse(&format!(
+        "{}{}",
+        url.as_str().trim_end_matches('/'),
+        request_path
+    ))
+    .map_err(|error| format!("could not build HTTP URL: {error}"))
+}
+
+const MAX_CATALOG_BYTES: usize = 512 * 1024;
+const MAX_PACKAGE_DESCRIPTOR_BYTES: usize = 512 * 1024;
+const MAX_PACKAGE_TEXT_BYTES: usize = 512 * 1024;
+const MAX_PACKAGE_FILE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_PACKAGE_FILES: usize = 128;
+
+fn load_catalog(base_url: &Url) -> Result<Vec<CatalogEntry>, String> {
+    let endpoint = http_url(base_url, "/cubes?page=1&page_size=50")?;
+    let source = fetch_http_text(&endpoint, MAX_CATALOG_BYTES)?;
+    let value: serde_json::Value = serde_json::from_str(&source)
+        .map_err(|error| format!("the cube catalog was invalid JSON: {error}"))?;
+    let cubes = value
+        .get("cubes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "the cube catalog did not contain a cubes list".to_owned())?;
+
+    cubes
+        .iter()
+        .map(|cube| {
+            let id = cube
+                .get("cubeId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "a cube catalog entry did not contain an ID".to_owned())?;
+            if !is_valid_game_id(id) {
+                return Err(format!(
+                    "the cube catalog returned an invalid game ID: {id}"
+                ));
+            }
+            let display_name = cube
+                .get("displayName")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(id)
+                .to_owned();
+            let version = cube
+                .get("version")
+                .map(value_as_string)
+                .unwrap_or_else(|| "unknown".to_owned());
+            let package_path = cube
+                .get("assetBaseURL")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| cube.get("packagePath").and_then(serde_json::Value::as_str))
+                .ok_or_else(|| format!("cube {id} did not contain a package path"))?;
+            let package_url = package_url(base_url, package_path)?;
+            Ok(CatalogEntry {
+                id: id.to_owned(),
+                display_name,
+                version,
+                package_url,
+            })
+        })
+        .collect()
+}
+
+fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePackage, String> {
+    let descriptor_url = entry
+        .package_url
+        .join("package.json")
+        .map_err(|error| format!("could not build the cube package URL: {error}"))?;
+    let descriptor_source = fetch_http_text(&descriptor_url, MAX_PACKAGE_DESCRIPTOR_BYTES)?;
+    let descriptor: serde_json::Value = serde_json::from_str(&descriptor_source)
+        .map_err(|error| format!("the cube package descriptor was invalid JSON: {error}"))?;
+    let manifest_name = descriptor
+        .get("manifest")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "the cube package descriptor has no manifest".to_owned())?;
+    let entry_name = descriptor
+        .get("entry")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "the cube package descriptor has no script entry".to_owned())?;
+    if manifest_name != "manifest.json" || entry_name != "game.luau" {
+        return Err("the cube package descriptor points to an unsupported entry".to_owned());
+    }
+    if descriptor.get("id").and_then(serde_json::Value::as_str) != Some(entry.id.as_str()) {
+        return Err("the cube package ID does not match the catalog entry".to_owned());
+    }
+    let files = descriptor
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "the cube package descriptor has no file table".to_owned())?;
+    let checksums = descriptor
+        .get("sha256")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "the cube package descriptor has no checksums".to_owned())?;
+    if files.len() > MAX_PACKAGE_FILES {
+        return Err("the cube package contains too many files".to_owned());
+    }
+    let file_paths = files
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    if !file_paths.contains(manifest_name) || !file_paths.contains(entry_name) {
+        return Err("the cube package file table is missing its manifest or script".to_owned());
+    }
+
+    let manifest_url = entry
+        .package_url
+        .join(manifest_name)
+        .map_err(|error| format!("could not build the cube manifest URL: {error}"))?;
+    let script_url = entry
+        .package_url
+        .join(entry_name)
+        .map_err(|error| format!("could not build the cube script URL: {error}"))?;
+    let manifest_bytes = fetch_http_bytes(&manifest_url, MAX_PACKAGE_TEXT_BYTES)?;
+    let script_bytes = fetch_http_bytes(&script_url, MAX_PACKAGE_TEXT_BYTES)?;
+    let manifest = String::from_utf8(manifest_bytes.clone())
+        .map_err(|_| "the cube manifest was not valid UTF-8".to_owned())?;
+    let script = String::from_utf8(script_bytes.clone())
+        .map_err(|_| "the cube script was not valid UTF-8".to_owned())?;
+    let manifest_value: serde_json::Value = serde_json::from_str(&manifest)
+        .map_err(|error| format!("the cube manifest was invalid JSON: {error}"))?;
+    if manifest_value.get("id").and_then(serde_json::Value::as_str) != Some(entry.id.as_str()) {
+        return Err("the cube manifest ID does not match the catalog entry".to_owned());
+    }
+    let expected_version = descriptor.get("version").map(value_as_string);
+    let manifest_version = manifest_value.get("version").map(value_as_string);
+    if expected_version != manifest_version {
+        return Err("the cube package version does not match its manifest".to_owned());
+    }
+
+    let image_paths = manifest_value
+        .get("assets")
+        .and_then(|assets| assets.get("images"))
+        .and_then(serde_json::Value::as_object)
+        .map(|images| {
+            images
+                .values()
+                .filter_map(|image| image.get("path").and_then(serde_json::Value::as_str))
+                .map(str::to_owned)
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut package_files = Vec::new();
+    for file in files {
+        let path = file
+            .as_str()
+            .ok_or_else(|| "the cube package file table contains a non-string path".to_owned())?;
+        if !is_safe_package_path(path) {
+            return Err(format!("the cube package file path is unsafe: {path}"));
+        }
+        let expected_hash = checksums
+            .get(path)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("the cube package has no checksum for {path}"))?;
+        if !is_sha256(expected_hash) {
+            return Err(format!("the cube package checksum for {path} is invalid"));
+        }
+        let bytes = if path == manifest_name {
+            manifest_bytes.clone()
+        } else if path == entry_name {
+            script_bytes.clone()
+        } else {
+            let url = entry
+                .package_url
+                .join(path)
+                .map_err(|error| format!("could not build the cube asset URL: {error}"))?;
+            fetch_http_bytes(&url, MAX_PACKAGE_FILE_BYTES)?
+        };
+        if sha256_hex(&bytes) != expected_hash {
+            return Err(format!(
+                "the cube package checksum did not match for {path}"
+            ));
+        }
+        if image_paths.contains(path) {
+            package_files.push((path.to_owned(), bytes));
+        }
+    }
+    Ok(RemoteGamePackage {
+        id: entry.id.clone(),
+        manifest,
+        script,
+        files: package_files,
+    })
+}
+
+fn package_url(base_url: &Url, raw: &str) -> Result<Url, String> {
+    let url = if raw.starts_with('/') {
+        http_url(base_url, raw)?
+    } else {
+        Url::parse(raw).map_err(|error| format!("cube package URL is invalid: {error}"))?
+    };
+    let expected_host = base_url.host_str();
+    let allowed_host = url.host_str() == expected_host
+        || (!cfg!(debug_assertions) && url.host_str() == Some("assets.cubacadabra.com"));
+    if !allowed_host || !matches!(url.scheme(), "http" | "https") {
+        return Err("cube package URL is outside the configured asset hosts".to_owned());
+    }
+    let mut url = url;
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    Ok(url)
+}
+
+fn fetch_http_text(url: &Url, maximum_bytes: usize) -> Result<String, String> {
+    let bytes = fetch_http_bytes(url, maximum_bytes)?;
+    String::from_utf8(bytes).map_err(|_| format!("response from {url} was not valid UTF-8"))
+}
+
+fn fetch_http_bytes(url: &Url, maximum_bytes: usize) -> Result<Vec<u8>, String> {
+    let mut response = ureq::get(url.as_str())
+        .header("accept", "application/json, application/octet-stream")
+        .call()
+        .map_err(|error| format!("could not load {url}: {error}"))?;
+    let bytes = response
+        .body_mut()
+        .read_to_vec()
+        .map_err(|error| format!("could not read {url}: {error}"))?;
+    if bytes.len() > maximum_bytes {
+        return Err(format!("response from {url} was too large"));
+    }
+    Ok(bytes)
+}
+
+fn value_as_string(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn is_safe_package_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && path
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn is_valid_game_id(value: &str) -> bool {
+    (3..=64).contains(&value.len())
+        && value.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
 }
 
 fn run_browser_auth(
@@ -541,7 +863,9 @@ fn wait_for_browser_callback(
                     .map(|(_, value)| value.to_string())
                 else {
                     write_browser_response(&mut stream, false);
-                    return Err("The browser login did not return an authorization code.".to_owned());
+                    return Err(
+                        "The browser login did not return an authorization code.".to_owned()
+                    );
                 };
                 let session = match exchange_browser_code(backend_url, &code, redirect_uri) {
                     Ok(session) => session,
@@ -581,8 +905,8 @@ fn read_callback_request(stream: &mut TcpStream) -> Result<String, String> {
             Err(error) => return Err(format!("could not read login callback: {error}")),
         }
     }
-    let request = String::from_utf8(bytes)
-        .map_err(|_| "login callback was not valid HTTP".to_owned())?;
+    let request =
+        String::from_utf8(bytes).map_err(|_| "login callback was not valid HTTP".to_owned())?;
     request
         .lines()
         .next()
@@ -594,9 +918,15 @@ fn read_callback_request(stream: &mut TcpStream) -> Result<String, String> {
 
 fn write_browser_response(stream: &mut TcpStream, success: bool) {
     let (title, message) = if success {
-        ("Signed in to cubacadabra", "You can close this browser window.")
+        (
+            "Signed in to cubacadabra",
+            "You can close this browser window.",
+        )
     } else {
-        ("Sign-in failed", "Cubacadabra could not finish signing you in.")
+        (
+            "Sign-in failed",
+            "Cubacadabra could not finish signing you in.",
+        )
     };
     let body = format!(
         "<!doctype html><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>body{{font:16px system-ui,sans-serif;background:#17181c;color:#f3f4f6;display:grid;place-items:center;min-height:100vh;margin:0}}main{{max-width:34rem;padding:32px}}p{{color:#b6bac5;line-height:1.5}}</style><main><h1>{title}</h1><p>{message}</p></main>"
@@ -672,10 +1002,6 @@ mod tests {
     #[test]
     fn web_control_plane_pages_have_stable_destinations() {
         let base = Url::parse("https://cubacadabra.com/login/?stale=true").unwrap();
-        assert_eq!(
-            apply_web_page(base.clone(), WebPage::BrowseGames).as_str(),
-            "https://cubacadabra.com/my-cube/#cubes"
-        );
         assert_eq!(
             apply_web_page(base.clone(), WebPage::Account).as_str(),
             "https://cubacadabra.com/my-cube/"

@@ -1,3 +1,4 @@
+use crate::network::CatalogEntry;
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor, wgpu};
 use egui_winit::State as EguiState;
 use std::mem;
@@ -5,9 +6,14 @@ use winit::{event::WindowEvent, window::Window};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WebRequest {
-    BrowseGames,
     Account,
     About,
+}
+
+#[derive(Debug)]
+pub(crate) enum GameRequest {
+    Bundled(String),
+    Remote(CatalogEntry),
 }
 
 pub(crate) struct PreparedMenu {
@@ -21,10 +27,28 @@ pub(crate) struct PlayerMenu {
     renderer: Renderer,
     pending_textures_delta: egui::TexturesDelta,
     signed_in_name: Option<String>,
-    start_requested: bool,
     sign_in_requested: bool,
     web_request: Option<WebRequest>,
+    game_request: Option<GameRequest>,
+    catalog_requested: bool,
+    catalog: CatalogState,
+    loading_game_id: Option<String>,
+    game_error: Option<String>,
+    screen: Screen,
     auth_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Screen {
+    Home,
+    Catalog,
+}
+
+#[derive(Default)]
+struct CatalogState {
+    entries: Vec<CatalogEntry>,
+    loading: bool,
+    error: Option<String>,
 }
 
 impl PlayerMenu {
@@ -52,9 +76,14 @@ impl PlayerMenu {
             ),
             pending_textures_delta: egui::TexturesDelta::default(),
             signed_in_name: None,
-            start_requested: false,
             sign_in_requested: false,
             web_request: None,
+            game_request: None,
+            catalog_requested: false,
+            catalog: CatalogState::default(),
+            loading_game_id: None,
+            game_error: None,
+            screen: Screen::Home,
             auth_pending: false,
         }
     }
@@ -63,18 +92,16 @@ impl PlayerMenu {
         self.state.on_window_event(window, event).consumed
     }
 
-    pub(crate) fn prepare(&mut self, window: &Window, game_name: &str) -> PreparedMenu {
+    pub(crate) fn prepare(&mut self, window: &Window, current_game_id: &str) -> PreparedMenu {
         let input = self.state.take_egui_input(window);
         let context = self.context.clone();
         let output = context.run_ui(input, |context| {
-            egui::CentralPanel::default().show(context, |ui| self.show(ui, game_name));
+            egui::CentralPanel::default().show(context, |ui| self.show(ui, current_game_id));
         });
         self.state
             .handle_platform_output(window, output.platform_output);
         let pixels_per_point = self.context.pixels_per_point();
-        let paint_jobs = self
-            .context
-            .tessellate(output.shapes, pixels_per_point);
+        let paint_jobs = self.context.tessellate(output.shapes, pixels_per_point);
         let size = window.inner_size();
         self.pending_textures_delta.append(output.textures_delta);
         PreparedMenu {
@@ -96,7 +123,8 @@ impl PlayerMenu {
     ) {
         let textures_delta = mem::take(&mut self.pending_textures_delta);
         for (id, image_delta) in &textures_delta.set {
-            self.renderer.update_texture(device, queue, *id, image_delta);
+            self.renderer
+                .update_texture(device, queue, *id, image_delta);
         }
         let command_buffers = self.renderer.update_buffers(
             device,
@@ -132,10 +160,6 @@ impl PlayerMenu {
         }
     }
 
-    pub(crate) fn take_start_requested(&mut self) -> bool {
-        mem::take(&mut self.start_requested)
-    }
-
     pub(crate) fn take_sign_in_requested(&mut self) -> bool {
         mem::take(&mut self.sign_in_requested)
     }
@@ -144,19 +168,57 @@ impl PlayerMenu {
         self.web_request.take()
     }
 
+    pub(crate) fn take_game_request(&mut self) -> Option<GameRequest> {
+        self.game_request.take()
+    }
+
+    pub(crate) fn take_catalog_requested(&mut self) -> bool {
+        mem::take(&mut self.catalog_requested)
+    }
+
     pub(crate) fn set_auth_pending(&mut self, pending: bool) {
         self.auth_pending = pending;
     }
 
     pub(crate) fn set_authenticated(&mut self, user: &crate::network::AuthUser) {
-        self.signed_in_name = Some(
-            user.username
-                .clone()
-                .unwrap_or_else(|| user.name.clone()),
-        );
+        self.signed_in_name = Some(user.username.clone().unwrap_or_else(|| user.name.clone()));
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, game_name: &str) {
+    pub(crate) fn begin_catalog_load(&mut self) {
+        self.screen = Screen::Catalog;
+        self.catalog.loading = true;
+        self.catalog.error = None;
+        self.catalog.entries.clear();
+    }
+
+    pub(crate) fn set_catalog_result(&mut self, entries: Vec<CatalogEntry>) {
+        self.screen = Screen::Catalog;
+        self.catalog.loading = false;
+        self.catalog.error = None;
+        self.catalog.entries = entries;
+    }
+
+    pub(crate) fn set_catalog_error(&mut self, message: String) {
+        self.screen = Screen::Catalog;
+        self.catalog.loading = false;
+        self.catalog.error = Some(message);
+    }
+
+    pub(crate) fn set_game_loading(&mut self, game_id: Option<String>) {
+        self.loading_game_id = game_id;
+        self.game_error = None;
+    }
+
+    pub(crate) fn set_game_error(&mut self, message: String) {
+        self.loading_game_id = None;
+        self.game_error = Some(message);
+    }
+
+    pub(crate) fn back_to_home(&mut self) {
+        self.screen = Screen::Home;
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui, current_game_id: &str) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -169,64 +231,157 @@ impl PlayerMenu {
                             ui.label("●");
                         });
                     });
-                    ui.add_space(46.0);
-                    ui.heading(egui::RichText::new("Your cubes").size(38.0));
-                    ui.label("Choose a game to enter its lobby.");
-                    ui.add_space(30.0);
-                    section_label(ui, "CUBES");
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        menu_row(ui, "01", game_name, "Continue playing this cube", true, || {
-                            self.start_requested = true;
-                        });
-                        ui.separator();
-                        menu_row(
-                            ui,
-                            "+",
-                            "Browse games on cubacadabra.com",
-                            "Discover more Cubes on the web",
-                            true,
-                            || self.web_request = Some(WebRequest::BrowseGames),
-                        );
-                    });
-                    ui.add_space(28.0);
-                    section_label(ui, "ACCOUNT");
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        if let Some(name) = self.signed_in_name.clone() {
-                            menu_row(
-                                ui,
-                                "@",
-                                &format!("Signed in as {name}"),
-                                "Account & avatar on cubacadabra.com",
-                                true,
-                                || self.web_request = Some(WebRequest::Account),
-                            );
-                        } else {
-                            menu_row(
-                                ui,
-                                "@",
-                                if self.auth_pending { "Signing in…" } else { "Sign in" },
-                                "Manage your account",
-                                !self.auth_pending,
-                                || {
-                                    self.sign_in_requested = true;
-                                },
-                            );
-                        }
-                    });
-                    ui.add_space(28.0);
-                    section_label(ui, "ABOUT");
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        menu_row(
-                            ui,
-                            "i",
-                            "About cubacadabra",
-                            "Learn more on the web",
-                            true,
-                            || self.web_request = Some(WebRequest::About),
-                        );
-                    });
+                    match self.screen {
+                        Screen::Home => self.show_home(ui, current_game_id),
+                        Screen::Catalog => self.show_catalog(ui),
+                    }
+                    if let Some(error) = &self.game_error {
+                        ui.add_space(12.0);
+                        ui.colored_label(egui::Color32::from_rgb(190, 55, 45), error);
+                    }
                 });
             });
+    }
+
+    fn show_home(&mut self, ui: &mut egui::Ui, current_game_id: &str) {
+        ui.add_space(46.0);
+        ui.heading(egui::RichText::new("Your cubes").size(38.0));
+        ui.label("Choose a game to enter its lobby.");
+        ui.add_space(30.0);
+        section_label(ui, "CUBES");
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            let games = [
+                ("first-game", "First Game", "Build together in the clearing"),
+                (
+                    "second-game",
+                    "Second Game",
+                    "Drop signals in the relay yard",
+                ),
+            ];
+            for (index, (id, title, subtitle)) in games.into_iter().enumerate() {
+                if index > 0 {
+                    ui.separator();
+                }
+                let detail = if id == current_game_id {
+                    "Resume this game"
+                } else {
+                    subtitle
+                };
+                menu_row(
+                    ui,
+                    if id == current_game_id { "▶" } else { "◇" },
+                    title,
+                    detail,
+                    self.loading_game_id.is_none(),
+                    || self.game_request = Some(GameRequest::Bundled(id.to_owned())),
+                );
+            }
+            ui.separator();
+            menu_row(
+                ui,
+                "＋",
+                "List cubes",
+                if self.catalog.loading {
+                    "Loading uploaded cubes…"
+                } else {
+                    "Browse uploaded cubes"
+                },
+                self.loading_game_id.is_none(),
+                || self.catalog_requested = true,
+            );
+        });
+        ui.add_space(28.0);
+        section_label(ui, "ACCOUNT");
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            if let Some(name) = self.signed_in_name.clone() {
+                menu_row(
+                    ui,
+                    "@",
+                    &format!("Signed in as {name}"),
+                    "Account & avatar on cubacadabra.com",
+                    true,
+                    || self.web_request = Some(WebRequest::Account),
+                );
+            } else {
+                menu_row(
+                    ui,
+                    "@",
+                    if self.auth_pending {
+                        "Signing in…"
+                    } else {
+                        "Sign in"
+                    },
+                    "Manage your account",
+                    !self.auth_pending,
+                    || self.sign_in_requested = true,
+                );
+            }
+        });
+        ui.add_space(28.0);
+        section_label(ui, "ABOUT");
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            menu_row(
+                ui,
+                "i",
+                "About cubacadabra",
+                "Learn more on the web",
+                true,
+                || self.web_request = Some(WebRequest::About),
+            );
+        });
+    }
+
+    fn show_catalog(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(28.0);
+        ui.horizontal(|ui| {
+            if ui.button("‹  Back").clicked() {
+                self.back_to_home();
+            }
+            ui.heading(egui::RichText::new("List cubes").size(30.0));
+        });
+        ui.add_space(8.0);
+        ui.label("Choose an uploaded cube to download and enter.");
+        ui.add_space(24.0);
+        section_label(ui, "UPLOADED CUBES");
+        if self.catalog.loading {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label("Loading cubes…");
+            });
+            return;
+        }
+        if let Some(error) = self.catalog.error.clone() {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.colored_label(egui::Color32::from_rgb(190, 55, 45), &error);
+                if ui.button("Try again").clicked() {
+                    self.catalog_requested = true;
+                    self.catalog.loading = true;
+                    self.catalog.error = None;
+                }
+            });
+            return;
+        }
+        if self.catalog.entries.is_empty() {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.label("No uploaded cubes yet.");
+            });
+            return;
+        }
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            let entries = self.catalog.entries.clone();
+            for (index, entry) in entries.into_iter().enumerate() {
+                if index > 0 {
+                    ui.separator();
+                }
+                menu_row(
+                    ui,
+                    "◇",
+                    &entry.display_name,
+                    &format!("{} · v{}", entry.id, entry.version),
+                    self.loading_game_id.is_none(),
+                    || self.game_request = Some(GameRequest::Remote(entry.clone())),
+                );
+            }
+        });
     }
 }
 

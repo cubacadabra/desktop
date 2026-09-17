@@ -31,10 +31,11 @@ Controls are `WASD` or the arrow keys to move, `Shift` to sprint, `Space` to
 jump, left-drag to orbit the camera, and the mouse wheel to zoom.
 
 Selecting **Leave Game** from the shared in-game menu disconnects the game
-world and returns to the native player menu. The focused player menu can resume
-the current package and opens the web control plane for Cube discovery, account,
-avatar, safety, and other profile management. Set `CUBACADABRA_USERNAME` to
-choose the initial local username before signing in.
+world and returns to the native player menu. The player menu can enter the
+bundled `first-game` and `second-game` packages, or open **List cubes** to load
+uploaded packages from the backend catalog. Account and informational surfaces
+still open in the web control plane. Set `CUBACADABRA_USERNAME` to choose the
+initial local username before signing in.
 
 ## Git hooks
 

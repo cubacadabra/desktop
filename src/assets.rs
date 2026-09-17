@@ -44,6 +44,22 @@ pub fn load_bundled(
     })
 }
 
+pub fn load_from_files(
+    files: &[(String, Vec<u8>)],
+    manifest_source: &str,
+) -> Result<Option<ImageAtlas>, Box<dyn Error>> {
+    load_images(manifest_source, |relative| {
+        files
+            .iter()
+            .find_map(|(path, bytes)| (path == relative).then_some(bytes.clone()))
+            .ok_or_else(|| {
+                Box::new(DesktopError(format!(
+                    "remote package asset file does not exist: {relative}"
+                ))) as Box<dyn Error>
+            })
+    })
+}
+
 fn load_images(
     manifest_source: &str,
     mut read_asset: impl FnMut(&str) -> Result<Vec<u8>, Box<dyn Error>>,

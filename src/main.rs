@@ -48,65 +48,67 @@ struct DesktopApp {
     last_frame: Instant,
 }
 
+struct PackageContent {
+    id: String,
+    manifest: String,
+    script: String,
+    atlas: Option<assets::ImageAtlas>,
+}
+
 impl DesktopApp {
     fn load(package_root: PathBuf) -> Result<Self, Box<dyn Error>> {
         let manifest_source = read_package_file(&package_root, "manifest.json")?;
         let script_source = read_package_file(&package_root, "game.luau")?;
-        let mut client = ClientSession::load(&manifest_source, &script_source)?;
-        let username = std::env::var("CUBACADABRA_USERNAME")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "Player".to_owned());
-        let _ = client.engine_mut().set_username_value(&username);
-        let network = network::BackendClient::new(client.game_id()).map_err(DesktopError)?;
         let atlas = assets::load(&package_root, &manifest_source)?;
         let package_name = package_root
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("game")
             .to_owned();
-        info!("desktop loaded: game_id={}", client.game_id());
-        Ok(Self {
-            package_name,
-            client,
-            network,
-            atlas,
-            window: None,
-            renderer: None,
-            menu: None,
-            in_game: true,
-            auth_pending: false,
-            username,
-            keys: HashSet::new(),
-            jump_queued: false,
-            pointer: None,
-            camera_active: false,
-            ui_active: false,
-            look_delta: (0.0, 0.0),
-            zoom_delta: 0.0,
-            last_frame: Instant::now(),
-        })
+        Self::from_package(
+            PackageContent {
+                id: package_name,
+                manifest: manifest_source,
+                script: script_source,
+                atlas,
+            },
+            true,
+        )
     }
 
     fn load_bundled() -> Result<Self, Box<dyn Error>> {
-        let mut client = ClientSession::load(bundled::MANIFEST, bundled::SCRIPT)?;
+        let package = bundled::PACKAGES
+            .first()
+            .ok_or_else(|| DesktopError("no bundled game packages were generated".into()))?;
+        Self::from_package(
+            PackageContent {
+                id: package.id.to_owned(),
+                manifest: package.manifest.to_owned(),
+                script: package.script.to_owned(),
+                atlas: assets::load_bundled(package.files, package.manifest)?,
+            },
+            true,
+        )
+    }
+
+    fn from_package(package: PackageContent, in_game: bool) -> Result<Self, Box<dyn Error>> {
+        let mut client = ClientSession::load(&package.manifest, &package.script)?;
         let username = std::env::var("CUBACADABRA_USERNAME")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "Player".to_owned());
         let _ = client.engine_mut().set_username_value(&username);
         let network = network::BackendClient::new(client.game_id()).map_err(DesktopError)?;
-        let atlas = assets::load_bundled(bundled::FILES, bundled::MANIFEST)?;
-        info!("desktop loaded bundled game: game_id={}", client.game_id());
+        info!("desktop loaded game: game_id={}", client.game_id());
         Ok(Self {
-            package_name: bundled::GAME_ID.to_owned(),
+            package_name: package.id,
             client,
             network,
-            atlas,
+            atlas: package.atlas,
             window: None,
             renderer: None,
             menu: None,
-            in_game: true,
+            in_game,
             auth_pending: false,
             username,
             keys: HashSet::new(),
@@ -201,8 +203,8 @@ impl DesktopApp {
             &[KeyCode::KeyA, KeyCode::ArrowLeft],
         );
         let moving = (forward * forward + strafe * strafe).sqrt() > 0.01;
-        let sprint = self.keys.contains(&KeyCode::ShiftLeft)
-            || self.keys.contains(&KeyCode::ShiftRight);
+        let sprint =
+            self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
         self.client.set_input_values(
             forward,
             strafe,
@@ -280,6 +282,33 @@ impl DesktopApp {
                     }
                     error!("sign-in failed: {message}");
                 }
+                network::Event::CatalogLoaded(entries) => {
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_catalog_result(entries);
+                    }
+                }
+                network::Event::CatalogError(message) => {
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_catalog_error(message);
+                    }
+                }
+                network::Event::PackageLoaded(package) => {
+                    let package_id = package.id.clone();
+                    match self.install_remote_package(package) {
+                        Ok(()) => info!("desktop loaded remote game: game_id={package_id}"),
+                        Err(error) => {
+                            if let Some(menu) = &mut self.menu {
+                                menu.set_game_error(error.to_string());
+                            }
+                        }
+                    }
+                }
+                network::Event::PackageError { game_id, message } => {
+                    error!("could not load remote game {game_id}: {message}");
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_game_error(message);
+                    }
+                }
                 network::Event::Message(source) => {
                     let _ = self.client.receive_text(&source);
                 }
@@ -333,34 +362,139 @@ impl DesktopApp {
         info!("returned to player menu (lobby={returned_to_lobby})");
     }
 
+    fn install_bundled_game(&mut self, game_id: &str) -> Result<(), Box<dyn Error>> {
+        let package = bundled::PACKAGES
+            .iter()
+            .find(|package| package.id == game_id)
+            .ok_or_else(|| DesktopError(format!("the bundled game {game_id} was not found")))?;
+        self.install_package(PackageContent {
+            id: package.id.to_owned(),
+            manifest: package.manifest.to_owned(),
+            script: package.script.to_owned(),
+            atlas: assets::load_bundled(package.files, package.manifest)?,
+        })
+    }
+
+    fn install_remote_package(
+        &mut self,
+        package: network::RemoteGamePackage,
+    ) -> Result<(), Box<dyn Error>> {
+        let atlas = assets::load_from_files(&package.files, &package.manifest)?;
+        self.install_package(PackageContent {
+            id: package.id,
+            manifest: package.manifest,
+            script: package.script,
+            atlas,
+        })
+    }
+
+    fn install_package(&mut self, package: PackageContent) -> Result<(), Box<dyn Error>> {
+        let auth_session = self.network.auth_session();
+        self.client.transport_disconnected();
+        self.network.disconnect();
+
+        let mut client = ClientSession::load(&package.manifest, &package.script)?;
+        let _ = client.engine_mut().set_username_value(&self.username);
+        if auth_session.is_some() {
+            client.engine_mut().set_authenticated_value(true);
+        }
+        let network = network::BackendClient::new(client.game_id()).map_err(DesktopError)?;
+        if let Some(session) = auth_session {
+            network.set_auth_session(session);
+        }
+
+        self.client = client;
+        self.network = network;
+        self.package_name = package.id;
+        self.atlas = package.atlas;
+        if let Some(renderer) = &mut self.renderer {
+            if let Some(atlas) = &self.atlas {
+                if !renderer.set_package_image_atlas(
+                    atlas.width,
+                    atlas.height,
+                    &atlas.pixels,
+                    atlas.regions.clone(),
+                ) {
+                    return Err(Box::new(DesktopError(
+                        "the game's image atlas could not be uploaded".into(),
+                    )));
+                }
+            } else if !renderer.set_package_image_atlas(
+                1,
+                1,
+                &[0, 0, 0, 0],
+                std::collections::BTreeMap::new(),
+            ) {
+                return Err(Box::new(DesktopError(
+                    "the game's image atlas could not be cleared".into(),
+                )));
+            }
+        }
+        self.last_frame = Instant::now();
+        self.clear_input();
+        self.in_game = true;
+        self.client.request_transport();
+        self.dispatch_actions();
+        if let Some(menu) = &mut self.menu {
+            menu.back_to_home();
+            menu.set_game_loading(None);
+        }
+        Ok(())
+    }
+
     fn render_menu(&mut self) {
         let Some(window) = &self.window else { return };
-        let game_name = self.package_name.clone();
-        let Some(menu) = &mut self.menu else { return };
-        let prepared = menu.prepare(window, &game_name);
-        if let Some(renderer) = &mut self.renderer {
-            renderer.draw_with_overlay(|device, queue, encoder, destination| {
-                menu.paint(device, queue, encoder, destination, prepared);
-            });
-        }
-        let sign_in_requested = menu.take_sign_in_requested();
-        let web_request = menu.take_web_request();
-        let start_requested = menu.take_start_requested();
+        let game_name = self.client.game_id().to_owned();
+        let (sign_in_requested, web_request, catalog_requested, game_request) = {
+            let Some(menu) = &mut self.menu else { return };
+            let prepared = menu.prepare(window, &game_name);
+            if let Some(renderer) = &mut self.renderer {
+                renderer.draw_with_overlay(|device, queue, encoder, destination| {
+                    menu.paint(device, queue, encoder, destination, prepared);
+                });
+            }
+            (
+                menu.take_sign_in_requested(),
+                menu.take_web_request(),
+                menu.take_catalog_requested(),
+                menu.take_game_request(),
+            )
+        };
         if sign_in_requested {
             self.begin_browser_auth();
         }
         if let Some(request) = web_request {
             let page = match request {
-                menu::WebRequest::BrowseGames => network::WebPage::BrowseGames,
                 menu::WebRequest::Account => network::WebPage::Account,
                 menu::WebRequest::About => network::WebPage::About,
             };
             self.network.open_web(page);
         }
-        if start_requested {
-            self.in_game = true;
-            self.client.request_transport();
-            self.dispatch_actions();
+        if catalog_requested {
+            if let Some(menu) = &mut self.menu {
+                menu.begin_catalog_load();
+            }
+            self.network.load_catalog();
+        }
+        if let Some(request) = game_request {
+            match request {
+                menu::GameRequest::Bundled(game_id) => {
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_game_loading(Some(game_id.clone()));
+                    }
+                    if let Err(error) = self.install_bundled_game(&game_id) {
+                        if let Some(menu) = &mut self.menu {
+                            menu.set_game_error(error.to_string());
+                        }
+                    }
+                }
+                menu::GameRequest::Remote(entry) => {
+                    if let Some(menu) = &mut self.menu {
+                        menu.set_game_loading(Some(entry.id.clone()));
+                    }
+                    self.network.load_package(entry);
+                }
+            }
         }
     }
 
