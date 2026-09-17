@@ -394,6 +394,7 @@ impl DesktopApp {
         self.network.disconnect();
 
         let mut client = ClientSession::load(&package.manifest, &package.script)?;
+        info!("installing game package: game_id={}", client.game_id());
         let _ = client.engine_mut().set_username_value(&self.username);
         if auth_session.is_some() {
             client.engine_mut().set_authenticated_value(true);
@@ -407,6 +408,10 @@ impl DesktopApp {
         self.network = network;
         self.package_name = package.id;
         self.atlas = package.atlas;
+        if let Some(window) = &self.window {
+            window.set_title(&format!("Cubacadabra — {}", self.package_name));
+        }
+        self.update_viewport();
         if let Some(renderer) = &mut self.renderer {
             if let Some(atlas) = &self.atlas {
                 if !renderer.set_package_image_atlas(
@@ -479,6 +484,7 @@ impl DesktopApp {
         if let Some(request) = game_request {
             match request {
                 menu::GameRequest::Bundled(game_id) => {
+                    info!("requesting bundled game: game_id={game_id}");
                     if let Some(menu) = &mut self.menu {
                         menu.set_game_loading(Some(game_id.clone()));
                     }
@@ -489,6 +495,10 @@ impl DesktopApp {
                     }
                 }
                 menu::GameRequest::Remote(entry) => {
+                    info!(
+                        "requesting catalog game: game_id={} package_url={}",
+                        entry.id, entry.package_url
+                    );
                     if let Some(menu) = &mut self.menu {
                         menu.set_game_loading(Some(entry.id.clone()));
                     }
