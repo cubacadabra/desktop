@@ -4,10 +4,24 @@ use std::{
     error::Error,
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/logs/HEAD");
+    let git_sha = Command::new("git")
+        .args(["rev-parse", "--short=8", "HEAD"])
+        .current_dir(&manifest_dir)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|sha| sha.trim().to_owned())
+        .filter(|sha| sha.len() == 8 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .unwrap_or_else(|| "UNKNOWN".to_owned());
+    println!("cargo:rustc-env=CUBACADABRA_GIT_SHA={git_sha}");
     let workspace_root = manifest_dir
         .parent()
         .ok_or("desktop repository has no workspace parent")?;

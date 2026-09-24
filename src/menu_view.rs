@@ -120,6 +120,11 @@ impl PlayerMenu {
             return;
         }
         let visuals = context.style_of(context.theme()).visuals.clone();
+        let panel_fill = visuals.window_fill;
+        let border = visuals.window_stroke.color;
+        let text = visuals.text_color();
+        let secondary_text = visuals.widgets.inactive.fg_stroke.color;
+        let muted = visuals.widgets.noninteractive.fg_stroke.color;
         let about_texture = self.about_texture;
         let logo_texture = self.logo_texture.clone();
         let mut close_requested = false;
@@ -127,8 +132,8 @@ impl PlayerMenu {
             .backdrop_color(egui::Color32::from_black_alpha(150))
             .frame(
                 egui::Frame::NONE
-                    .fill(visuals.panel_fill)
-                    .stroke(egui::Stroke::new(1.0, visuals.window_stroke.color))
+                    .fill(panel_fill)
+                    .stroke(egui::Stroke::new(1.0, border))
                     .corner_radius(6.0)
                     .inner_margin(egui::Margin::same(20)),
             )
@@ -139,7 +144,12 @@ impl PlayerMenu {
                         egui::Image::from_texture(&logo_texture)
                             .fit_to_exact_size(egui::vec2(28.0, 28.0)),
                     );
-                    ui.label(egui::RichText::new("About Cubacadabra").size(20.0));
+                    ui.label(
+                        egui::RichText::new("About Cubacadabra")
+                            .size(20.0)
+                            .strong()
+                            .color(text),
+                    );
                 });
                 ui.add_space(14.0);
                 if let Some(texture) = about_texture {
@@ -152,12 +162,16 @@ impl PlayerMenu {
                 ui.add_space(12.0);
                 ui.label(
                     egui::RichText::new(format!(
-                        "Cubacadabra Desktop {}",
-                        env!("CARGO_PKG_VERSION")
+                        "Cubacadabra Desktop {} ({})",
+                        env!("CARGO_PKG_VERSION"),
+                        env!("CUBACADABRA_GIT_SHA")
                     ))
-                    .strong(),
+                    .strong()
+                    .color(secondary_text),
                 );
-                ui.label("An open-source player for building worlds.");
+                ui.label(
+                    egui::RichText::new("An open-source player for building worlds.").color(muted),
+                );
                 ui.add_space(16.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
