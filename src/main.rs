@@ -1,6 +1,8 @@
 mod app;
 mod assets;
 mod bundled;
+#[cfg(target_os = "macos")]
+mod macos;
 mod menu;
 mod network;
 mod options;

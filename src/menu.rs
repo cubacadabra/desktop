@@ -135,11 +135,20 @@ impl PlayerMenu {
         self.state.on_window_event(window, event).consumed
     }
 
-    pub(crate) fn prepare(&mut self, window: &Window, current_game_id: &str) -> PreparedMenu {
+    pub(crate) fn prepare(
+        &mut self,
+        window: &Window,
+        current_game_id: &str,
+        show_player_menu: bool,
+    ) -> PreparedMenu {
         let input = self.state.take_egui_input(window);
         let context = self.context.clone();
         let output = context.run_ui(input, |context| {
-            egui::CentralPanel::default().show(context, |ui| self.show(ui, current_game_id));
+            if show_player_menu {
+                egui::CentralPanel::default().show(context, |ui| self.show(ui, current_game_id));
+            } else {
+                self.show_about(context);
+            }
         });
         self.state
             .handle_platform_output(window, output.platform_output);

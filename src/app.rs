@@ -199,6 +199,13 @@ impl DesktopApp {
 
     fn render(&mut self) {
         self.drain_network();
+        #[cfg(target_os = "macos")]
+        if crate::macos::take_about_requested() {
+            if let Some(menu) = &mut self.menu {
+                menu.open_about();
+            }
+            self.clear_input();
+        }
         if !self.in_game {
             self.render_menu();
             return;
@@ -244,9 +251,32 @@ impl DesktopApp {
             self.network.send_move(movement);
         }
 
+        let prepared_about = if self
+            .menu
+            .as_ref()
+            .is_some_and(menu::PlayerMenu::about_is_open)
+        {
+            let game_name = self.client.game_id().to_owned();
+            match (&self.window, &mut self.menu) {
+                (Some(window), Some(menu)) => Some(menu.prepare(window, &game_name, false)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         if let Some(renderer) = &mut self.renderer {
             renderer.sync(self.client.engine());
-            renderer.draw();
+            match (&mut self.menu, prepared_about) {
+                (Some(menu), Some(prepared)) => {
+                    self.about_preview.step();
+                    renderer.render_about_preview(self.about_preview.engine());
+                    renderer.draw_with_overlay(|device, queue, encoder, destination| {
+                        menu.paint(device, queue, encoder, destination, prepared);
+                    });
+                }
+                _ => renderer.draw(),
+            }
         }
     }
 
@@ -382,7 +412,7 @@ impl DesktopApp {
         let game_name = self.client.game_id().to_owned();
         let (sign_in_requested, web_request, catalog_requested, game_request) = {
             let Some(menu) = &mut self.menu else { return };
-            let prepared = menu.prepare(window, &game_name);
+            let prepared = menu.prepare(window, &game_name, true);
             if let Some(renderer) = &mut self.renderer {
                 if menu.about_is_open() {
                     self.about_preview.step();

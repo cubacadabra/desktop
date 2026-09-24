@@ -11,6 +11,8 @@ impl ApplicationHandler for DesktopApp {
         if self.window.is_some() {
             return;
         }
+        #[cfg(target_os = "macos")]
+        crate::macos::install_native_menu();
         if let Err(error) = self.create_window(event_loop) {
             error!("Cubacadabra Desktop: {error}");
             event_loop.exit();
@@ -23,7 +25,11 @@ impl ApplicationHandler for DesktopApp {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        if !self.in_game
+        let about_open = self
+            .menu
+            .as_ref()
+            .is_some_and(crate::menu::PlayerMenu::about_is_open);
+        if (!self.in_game || about_open)
             && let (Some(menu), Some(window)) = (&mut self.menu, &self.window)
         {
             menu.on_window_event(window, &event);
@@ -40,8 +46,10 @@ impl ApplicationHandler for DesktopApp {
                 self.render();
                 self.request_redraw();
             }
-            WindowEvent::KeyboardInput { event, .. } if self.in_game => self.handle_key(event),
-            WindowEvent::CursorMoved { position, .. } if self.in_game => {
+            WindowEvent::KeyboardInput { event, .. } if self.in_game && !about_open => {
+                self.handle_key(event)
+            }
+            WindowEvent::CursorMoved { position, .. } if self.in_game && !about_open => {
                 let next = self.logical_pointer(position.x, position.y);
                 if let Some(previous) = self.pointer
                     && self.camera_active
@@ -55,10 +63,10 @@ impl ApplicationHandler for DesktopApp {
                 }
                 self.pointer = Some(next);
             }
-            WindowEvent::MouseInput { state, button, .. } if self.in_game => {
+            WindowEvent::MouseInput { state, button, .. } if self.in_game && !about_open => {
                 self.handle_mouse(state, button)
             }
-            WindowEvent::MouseWheel { delta, .. } if self.in_game => {
+            WindowEvent::MouseWheel { delta, .. } if self.in_game && !about_open => {
                 self.zoom_delta += match delta {
                     MouseScrollDelta::LineDelta(_, y) => y * 0.9,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32 / 100.0,

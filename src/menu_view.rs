@@ -115,7 +115,7 @@ impl PlayerMenu {
         });
     }
 
-    fn show_about(&mut self, context: &egui::Context) {
+    pub(super) fn show_about(&mut self, context: &egui::Context) {
         if !self.about_open {
             return;
         }
