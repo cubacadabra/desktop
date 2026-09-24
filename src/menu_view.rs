@@ -24,6 +24,7 @@ impl PlayerMenu {
                     }
                 });
             });
+        self.show_about(ui.ctx());
     }
 
     fn show_home(&mut self, ui: &mut egui::Ui, current_game_id: &str) {
@@ -107,11 +108,59 @@ impl PlayerMenu {
                 ui,
                 "i",
                 "About cubacadabra",
-                "Learn more on the web",
+                "Open the About dialog",
                 true,
-                || self.web_request = Some(WebRequest::About),
+                || self.open_about(),
             );
         });
+    }
+
+    fn show_about(&mut self, context: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let visuals = context.style_of(context.theme()).visuals.clone();
+        let video_texture = self
+            .about_video
+            .as_mut()
+            .map(|video| video.update_texture(context).clone());
+        let video_error = self.about_video_error.clone();
+        let mut close_requested = false;
+        let response = egui::Modal::new(egui::Id::new("about_cubacadabra_player"))
+            .backdrop_color(egui::Color32::from_black_alpha(150))
+            .frame(
+                egui::Frame::NONE
+                    .fill(visuals.panel_fill)
+                    .stroke(egui::Stroke::new(1.0, visuals.window_stroke.color))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::same(20)),
+            )
+            .show(context, |ui| {
+                ui.set_width(520.0_f32.min(ui.available_width()));
+                ui.heading("About Cubacadabra");
+                ui.add_space(14.0);
+                if let Some(texture) = &video_texture {
+                    let width = ui.available_width().min(512.0);
+                    ui.add(
+                        egui::Image::from_texture(texture)
+                            .fit_to_exact_size(egui::vec2(width, width * 9.0 / 16.0)),
+                    );
+                } else if let Some(error) = &video_error {
+                    ui.colored_label(egui::Color32::from_rgb(220, 90, 75), error);
+                }
+                ui.add_space(12.0);
+                ui.label(format!("Cubacadabra Desktop {}", env!("CARGO_PKG_VERSION")));
+                ui.label("An open-source player for building worlds.");
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+        if close_requested || response.should_close() {
+            self.about_open = false;
+        }
     }
 
     fn show_catalog(&mut self, ui: &mut egui::Ui) {

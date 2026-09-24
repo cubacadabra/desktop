@@ -397,7 +397,6 @@ impl DesktopApp {
         if let Some(request) = web_request {
             let page = match request {
                 menu::WebRequest::Account => network::WebPage::Account,
-                menu::WebRequest::About => network::WebPage::About,
             };
             self.network.open_web(page);
         }

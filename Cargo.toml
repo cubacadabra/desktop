@@ -9,7 +9,7 @@ name = "desktop"
 path = "src/main.rs"
 
 [dependencies]
-cubacadabra-client = { path = "../rust/crates/client", default-features = false, features = ["desktop-backends"] }
+cubacadabra-client = { path = "../rust/crates/client", default-features = false, features = ["about-animation", "desktop-backends"] }
 egui = "0.35"
 egui-wgpu = { version = "0.35", default-features = false }
 egui-winit = "0.35"
