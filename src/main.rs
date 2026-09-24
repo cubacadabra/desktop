@@ -15,6 +15,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SharedUiAction {
+    OpenAbout,
     LeaveGame,
     SignIn,
 }
@@ -25,6 +26,7 @@ fn shared_ui_action(source: &[u8]) -> Option<SharedUiAction> {
         return None;
     }
     match event.get("action").and_then(serde_json::Value::as_str) {
+        Some("shared.about.open") => Some(SharedUiAction::OpenAbout),
         Some("shared.leave_game") => Some(SharedUiAction::LeaveGame),
         Some("shared.sign_in") => Some(SharedUiAction::SignIn),
         _ => None,
@@ -61,7 +63,11 @@ mod tests {
     use super::{SharedUiAction, shared_ui_action};
 
     #[test]
-    fn routes_shared_account_actions_on_activation() {
+    fn routes_shared_actions_on_activation() {
+        assert_eq!(
+            shared_ui_action(br#"{"action":"shared.about.open","phase":"activate"}"#),
+            Some(SharedUiAction::OpenAbout)
+        );
         assert_eq!(
             shared_ui_action(br#"{"action":"shared.sign_in","phase":"activate"}"#),
             Some(SharedUiAction::SignIn)
@@ -72,6 +78,10 @@ mod tests {
         );
         assert_eq!(
             shared_ui_action(br#"{"action":"shared.sign_in","phase":"press"}"#),
+            None
+        );
+        assert_eq!(
+            shared_ui_action(br#"{"action":"shared.about.open","phase":"press"}"#),
             None
         );
     }

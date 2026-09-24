@@ -372,13 +372,21 @@ impl DesktopApp {
 
     fn drain_ui_events(&mut self) -> bool {
         let mut leave_game = false;
+        let mut open_about = false;
         let mut sign_in = false;
         while let Some(source) = self.client.poll_ui_event_json() {
             match crate::shared_ui_action(&source) {
+                Some(crate::SharedUiAction::OpenAbout) => open_about = true,
                 Some(crate::SharedUiAction::LeaveGame) => leave_game = true,
                 Some(crate::SharedUiAction::SignIn) => sign_in = true,
                 None => {}
             }
+        }
+        if open_about {
+            if let Some(menu) = &mut self.menu {
+                menu.open_about();
+            }
+            self.clear_input();
         }
         if sign_in {
             self.begin_browser_auth();
