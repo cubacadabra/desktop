@@ -30,3 +30,5 @@ jobs:
       tools_ref: main
       game_repository: cubacadabra/first-game
       game_ref: main
+      second_game_repository: cubacadabra/second-game
+      second_game_ref: main
