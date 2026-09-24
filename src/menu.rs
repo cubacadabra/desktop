@@ -5,6 +5,8 @@ use egui_winit::State as EguiState;
 use std::mem;
 use winit::{event::WindowEvent, window::Window};
 
+const LOGO_BYTES: &[u8] = include_bytes!("../../rust/assets/images/logo.png");
+
 #[path = "menu_view.rs"]
 mod view;
 
@@ -39,6 +41,7 @@ pub(crate) struct PlayerMenu {
     game_error: Option<String>,
     screen: Screen,
     auth_pending: bool,
+    logo_texture: egui::TextureHandle,
     about_open: bool,
     about_video: Option<AboutVideo>,
     about_video_error: Option<String>,
@@ -86,6 +89,18 @@ impl AboutVideo {
     }
 }
 
+fn load_logo_texture(context: &egui::Context) -> egui::TextureHandle {
+    let image = image::load_from_memory(LOGO_BYTES)
+        .expect("bundled Cubacadabra logo should decode")
+        .to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    context.load_texture(
+        "cubacadabra-player-logo",
+        egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
+        egui::TextureOptions::LINEAR,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Screen {
     Home,
@@ -114,6 +129,7 @@ impl PlayerMenu {
             window.theme(),
             Some(4_096),
         );
+        let logo_texture = load_logo_texture(&context);
         Self {
             context,
             state,
@@ -133,6 +149,7 @@ impl PlayerMenu {
             game_error: None,
             screen: Screen::Home,
             auth_pending: false,
+            logo_texture,
             about_open: false,
             about_video: None,
             about_video_error: None,

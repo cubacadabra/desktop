@@ -125,6 +125,7 @@ impl PlayerMenu {
             .as_mut()
             .map(|video| video.update_texture(context).clone());
         let video_error = self.about_video_error.clone();
+        let logo_texture = self.logo_texture.clone();
         let mut close_requested = false;
         let response = egui::Modal::new(egui::Id::new("about_cubacadabra_player"))
             .backdrop_color(egui::Color32::from_black_alpha(150))
@@ -137,7 +138,13 @@ impl PlayerMenu {
             )
             .show(context, |ui| {
                 ui.set_width(520.0_f32.min(ui.available_width()));
-                ui.heading("About Cubacadabra");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Image::from_texture(&logo_texture)
+                            .fit_to_exact_size(egui::vec2(28.0, 28.0)),
+                    );
+                    ui.label(egui::RichText::new("About Cubacadabra").size(20.0));
+                });
                 ui.add_space(14.0);
                 if let Some(texture) = &video_texture {
                     let width = ui.available_width().min(512.0);
@@ -149,7 +156,13 @@ impl PlayerMenu {
                     ui.colored_label(egui::Color32::from_rgb(220, 90, 75), error);
                 }
                 ui.add_space(12.0);
-                ui.label(format!("Cubacadabra Desktop {}", env!("CARGO_PKG_VERSION")));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Cubacadabra Desktop {}",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .strong(),
+                );
                 ui.label("An open-source player for building worlds.");
                 ui.add_space(16.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -33,3 +33,11 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# Keep the bundled About animation responsive in local debug builds without
+# making the whole Desktop debug build expensive to compile.
+[profile.dev.package.image-webp]
+opt-level = 3
+
+[profile.dev.package.moxcms]
+opt-level = 3
