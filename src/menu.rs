@@ -1,5 +1,4 @@
 use crate::network::CatalogEntry;
-use cubacadabra_client::AboutAnimation;
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor, wgpu};
 use egui_winit::State as EguiState;
 use std::mem;
@@ -43,50 +42,7 @@ pub(crate) struct PlayerMenu {
     auth_pending: bool,
     logo_texture: egui::TextureHandle,
     about_open: bool,
-    about_video: Option<AboutVideo>,
-    about_video_error: Option<String>,
-}
-
-struct AboutVideo {
-    animation: AboutAnimation,
-    texture: Option<egui::TextureHandle>,
-    displayed_frame: u64,
-}
-
-impl AboutVideo {
-    fn decode() -> Result<Self, String> {
-        Ok(Self {
-            animation: AboutAnimation::decode()?,
-            texture: None,
-            displayed_frame: u64::MAX,
-        })
-    }
-
-    fn update_texture(&mut self, context: &egui::Context) -> &egui::TextureHandle {
-        let (frame_id, width, height, pixels) = {
-            let frame = self
-                .animation
-                .current_frame()
-                .expect("bundled About animation should provide a frame");
-            (frame.id, frame.width, frame.height, frame.pixels.clone())
-        };
-        if self.displayed_frame != frame_id {
-            let image = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels);
-            if let Some(texture) = &mut self.texture {
-                texture.set(image, egui::TextureOptions::LINEAR);
-            } else {
-                self.texture = Some(context.load_texture(
-                    "cubacadabra-player-about-video",
-                    image,
-                    egui::TextureOptions::LINEAR,
-                ));
-            }
-            self.displayed_frame = frame_id;
-        }
-        self.texture
-            .as_ref()
-            .expect("About video texture should be initialized")
-    }
+    about_texture: Option<egui::TextureId>,
 }
 
 fn load_logo_texture(context: &egui::Context) -> egui::TextureHandle {
@@ -151,19 +107,28 @@ impl PlayerMenu {
             auth_pending: false,
             logo_texture,
             about_open: false,
-            about_video: None,
-            about_video_error: None,
+            about_texture: None,
         }
     }
 
     pub(crate) fn open_about(&mut self) {
         self.about_open = true;
-        if self.about_video.is_none() && self.about_video_error.is_none() {
-            match AboutVideo::decode() {
-                Ok(video) => self.about_video = Some(video),
-                Err(error) => self.about_video_error = Some(error),
-            }
-        }
+    }
+
+    pub(crate) fn set_about_preview_texture(
+        &mut self,
+        device: &wgpu::Device,
+        texture: &wgpu::TextureView,
+    ) {
+        self.about_texture = Some(self.renderer.register_native_texture(
+            device,
+            texture,
+            wgpu::FilterMode::Linear,
+        ));
+    }
+
+    pub(crate) const fn about_is_open(&self) -> bool {
+        self.about_open
     }
 
     pub(crate) fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {

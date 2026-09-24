@@ -28,6 +28,7 @@ fn axis(keys: &HashSet<KeyCode>, positive: &[KeyCode], negative: &[KeyCode]) -> 
 pub(crate) struct DesktopApp {
     package_name: String,
     client: ClientSession,
+    about_preview: cubacadabra_about_preview::AboutPreview,
     network: network::BackendClient,
     atlas: Option<assets::ImageAtlas>,
     models: Vec<assets::ModelAsset>,
@@ -96,6 +97,7 @@ impl DesktopApp {
 
     fn from_package(package: PackageContent, in_game: bool) -> Result<Self, Box<dyn Error>> {
         let mut client = ClientSession::load(&package.manifest, &package.script)?;
+        let about_preview = cubacadabra_about_preview::AboutPreview::new().map_err(DesktopError)?;
         let username = std::env::var("CUBACADABRA_USERNAME")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -106,6 +108,7 @@ impl DesktopApp {
         Ok(Self {
             package_name: package.id,
             client,
+            about_preview,
             network,
             atlas: package.atlas,
             models: package.models,
@@ -160,7 +163,8 @@ impl DesktopApp {
                     DesktopError(format!("world model {} was rejected: {error}", model.id))
                 })?;
         }
-        let player_menu = menu::PlayerMenu::new(&window, &renderer);
+        let mut player_menu = menu::PlayerMenu::new(&window, &renderer);
+        player_menu.set_about_preview_texture(renderer.device(), renderer.about_preview_texture());
         self.window = Some(window);
         self.menu = Some(player_menu);
         self.renderer = Some(renderer);
@@ -380,6 +384,10 @@ impl DesktopApp {
             let Some(menu) = &mut self.menu else { return };
             let prepared = menu.prepare(window, &game_name);
             if let Some(renderer) = &mut self.renderer {
+                if menu.about_is_open() {
+                    self.about_preview.step();
+                    renderer.render_about_preview(self.about_preview.engine());
+                }
                 renderer.draw_with_overlay(|device, queue, encoder, destination| {
                     menu.paint(device, queue, encoder, destination, prepared);
                 });

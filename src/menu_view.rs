@@ -120,11 +120,7 @@ impl PlayerMenu {
             return;
         }
         let visuals = context.style_of(context.theme()).visuals.clone();
-        let video_texture = self
-            .about_video
-            .as_mut()
-            .map(|video| video.update_texture(context).clone());
-        let video_error = self.about_video_error.clone();
+        let about_texture = self.about_texture;
         let logo_texture = self.logo_texture.clone();
         let mut close_requested = false;
         let response = egui::Modal::new(egui::Id::new("about_cubacadabra_player"))
@@ -146,14 +142,12 @@ impl PlayerMenu {
                     ui.label(egui::RichText::new("About Cubacadabra").size(20.0));
                 });
                 ui.add_space(14.0);
-                if let Some(texture) = &video_texture {
+                if let Some(texture) = about_texture {
                     let width = ui.available_width().min(512.0);
                     ui.add(
-                        egui::Image::from_texture(texture)
+                        egui::Image::from_texture((texture, egui::vec2(width, width * 9.0 / 16.0)))
                             .fit_to_exact_size(egui::vec2(width, width * 9.0 / 16.0)),
                     );
-                } else if let Some(error) = &video_error {
-                    ui.colored_label(egui::Color32::from_rgb(220, 90, 75), error);
                 }
                 ui.add_space(12.0);
                 ui.label(

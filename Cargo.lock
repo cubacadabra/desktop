@@ -556,6 +556,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cubacadabra-about-preview"
+version = "0.4.0"
+dependencies = [
+ "cubacadabra-client",
+ "cubacadabra-project",
+ "cubacadabra-scene",
+ "serde_json",
+]
+
+[[package]]
 name = "cubacadabra-builder"
 version = "0.4.0"
 dependencies = [
@@ -572,7 +582,6 @@ name = "cubacadabra-client"
 version = "0.1.0"
 dependencies = [
  "cubacadabra-engine",
- "image",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -582,6 +591,7 @@ dependencies = [
 name = "cubacadabra-desktop"
 version = "0.0.1"
 dependencies = [
+ "cubacadabra-about-preview",
  "cubacadabra-builder",
  "cubacadabra-client",
  "egui",
@@ -630,6 +640,14 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cubacadabra-project"
+version = "0.4.0"
+dependencies = [
+ "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -1468,23 +1486,12 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
- "image-webp",
  "moxcms",
  "num-traits",
  "png 0.18.1",
  "tiff",
  "zune-core",
  "zune-jpeg",
-]
-
-[[package]]
-name = "image-webp"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
-dependencies = [
- "byteorder-lite",
- "quick-error",
 ]
 
 [[package]]
@@ -3370,6 +3377,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
 name = "toml_datetime"
 version = "1.1.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3469,6 +3482,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

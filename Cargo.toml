@@ -9,7 +9,8 @@ name = "desktop"
 path = "src/main.rs"
 
 [dependencies]
-cubacadabra-client = { path = "../rust/crates/client", default-features = false, features = ["about-animation", "desktop-backends"] }
+cubacadabra-about-preview = { path = "../tools/crates/about-preview" }
+cubacadabra-client = { path = "../rust/crates/client", default-features = false, features = ["desktop-backends", "studio-ui"] }
 egui = "0.35"
 egui-wgpu = { version = "0.35", default-features = false }
 egui-winit = "0.35"
@@ -33,11 +34,6 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
-
-# Keep the bundled About animation responsive in local debug builds without
-# making the whole Desktop debug build expensive to compile.
-[profile.dev.package.image-webp]
-opt-level = 3
 
 [profile.dev.package.moxcms]
 opt-level = 3
