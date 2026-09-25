@@ -6,7 +6,7 @@ use winit::{
     dpi::{LogicalSize, PhysicalSize},
     event_loop::ActiveEventLoop,
     keyboard::KeyCode,
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
+    raw_window_handle::HasWindowHandle,
     window::{Window, WindowAttributes},
 };
 
@@ -138,7 +138,7 @@ impl DesktopApp {
         )?;
         let size = window.inner_size();
         let mut renderer = Renderer::new(
-            window.display_handle()?.as_raw(),
+            event_loop.owned_display_handle(),
             window.window_handle()?.as_raw(),
             size.width as f32,
             size.height as f32,
