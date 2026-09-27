@@ -1,7 +1,7 @@
 use super::{DesktopApp, PackageContent};
 use crate::{assets, bundled, network, options::DesktopError};
 use cubacadabra_client::ClientSession;
-use log::info;
+use log::debug;
 use std::error::Error;
 use std::time::Instant;
 
@@ -44,7 +44,13 @@ impl DesktopApp {
         self.network.disconnect();
 
         let mut client = ClientSession::load(&package.manifest, &package.script)?;
-        info!("installing game package: game_id={}", client.game_id());
+        debug!(
+            "replacing game session: previous_game_id={} selected_game_id={} loaded_game_id={} active_world={:?}",
+            self.client.game_id(),
+            package.id,
+            client.game_id(),
+            client.engine().active_world_id(),
+        );
         let _ = client.engine_mut().set_username_value(&self.username);
         if auth_session.is_some() {
             client.engine_mut().set_authenticated_value(true);
@@ -64,6 +70,7 @@ impl DesktopApp {
         }
         self.update_viewport();
         if let Some(renderer) = &mut self.renderer {
+            renderer.invalidate_package_cache();
             renderer.clear_world_meshes();
             for model in &self.models {
                 renderer
@@ -93,6 +100,13 @@ impl DesktopApp {
                     "the game's image atlas could not be cleared".into(),
                 )));
             }
+            renderer.sync(self.client.engine());
+            debug!(
+                "renderer synced new game: game_id={} active_world={:?} models={}",
+                self.client.game_id(),
+                self.client.engine().active_world_id(),
+                self.models.len(),
+            );
         }
         self.last_frame = Instant::now();
         self.clear_input();
