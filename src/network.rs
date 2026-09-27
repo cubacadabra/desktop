@@ -235,7 +235,11 @@ fn run_worker(
                     pending.clear();
                     last_sent_move = None;
                 }
-                Ok(Command::Send(message)) => pending.push_back(message),
+                Ok(Command::Send(message)) => {
+                    if socket.is_some() || !is_live_cube_move(&message) {
+                        pending.push_back(message);
+                    }
+                }
                 Ok(Command::Move(movement)) => latest_move = Some(movement.movement),
                 Ok(Command::BeginBrowserAuth) => {
                     let backend_url = base_url.clone();
@@ -398,11 +402,18 @@ fn run_worker(
         }
         if failed {
             disconnect(&mut socket, &mut connected_world, &events);
+            pending.retain(|message| !is_live_cube_move(message));
             retry_at = Instant::now() + RECONNECT;
         }
         thread::sleep(POLL);
     }
     disconnect(&mut socket, &mut connected_world, &events);
+}
+
+fn is_live_cube_move(message: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(message).is_ok_and(|value| {
+        value.get("type").and_then(serde_json::Value::as_str) == Some("world_block_move")
+    })
 }
 
 fn socket_url(base: &Url, game_id: &str, world: &str) -> Result<Url, String> {
