@@ -1,8 +1,11 @@
 use super::{CatalogEntry, RemoteGamePackage};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use url::Url;
 
 const MAX_CATALOG_BYTES: usize = 512 * 1024;
+const CATALOG_PAGE_SIZE: usize = 50;
+const MAX_CATALOG_PAGES: usize = 200;
 const MAX_PACKAGE_DESCRIPTOR_BYTES: usize = 512 * 1024;
 const MAX_PACKAGE_TEXT_BYTES: usize = 512 * 1024;
 const MAX_PACKAGE_FILE_BYTES: usize = 10 * 1024 * 1024;
@@ -37,16 +40,47 @@ pub(super) fn http_url(base: &Url, path: &str) -> Result<Url, String> {
 }
 
 pub(super) fn load_catalog(base_url: &Url) -> Result<Vec<CatalogEntry>, String> {
-    let endpoint = http_url(base_url, "/cubes?page=1&page_size=50")?;
-    let source = fetch_http_text(&endpoint, MAX_CATALOG_BYTES)?;
+    let mut entries = Vec::new();
+    let mut seen_ids = HashSet::new();
+    for page in 1..=MAX_CATALOG_PAGES {
+        let endpoint = http_url(
+            base_url,
+            &format!("/cubes?page={page}&page_size={CATALOG_PAGE_SIZE}"),
+        )?;
+        let source = fetch_http_text(&endpoint, MAX_CATALOG_BYTES)?;
+        let (page_entries, has_next_page) = parse_catalog_page(base_url, &source, page)?;
+        for entry in page_entries {
+            if seen_ids.insert(entry.id.clone()) {
+                entries.push(entry);
+            }
+        }
+        if !has_next_page {
+            return Ok(entries);
+        }
+    }
+    Err("the cube catalog exceeded the supported page limit".to_owned())
+}
+
+fn parse_catalog_page(
+    base_url: &Url,
+    source: &str,
+    requested_page: usize,
+) -> Result<(Vec<CatalogEntry>, bool), String> {
     let value: serde_json::Value = serde_json::from_str(&source)
         .map_err(|error| format!("the cube catalog was invalid JSON: {error}"))?;
+    if value.get("page").and_then(serde_json::Value::as_u64) != Some(requested_page as u64) {
+        return Err("the cube catalog returned the wrong page".to_owned());
+    }
+    let has_next_page = value
+        .get("hasNextPage")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| "the cube catalog did not include pagination state".to_owned())?;
     let cubes = value
         .get("cubes")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| "the cube catalog did not contain a cubes list".to_owned())?;
 
-    cubes
+    let entries = cubes
         .iter()
         .map(|cube| {
             let id = cube
@@ -69,11 +103,18 @@ pub(super) fn load_catalog(base_url: &Url) -> Result<Vec<CatalogEntry>, String> 
                 .map(value_as_string)
                 .unwrap_or_else(|| "unknown".to_owned());
             let package_path = cube
-                .get("assetBaseURL")
+                .get("packagePath")
                 .and_then(serde_json::Value::as_str)
-                .or_else(|| cube.get("packagePath").and_then(serde_json::Value::as_str))
                 .ok_or_else(|| format!("cube {id} did not contain a package path"))?;
-            let package_url = package_url(base_url, package_path)?;
+            let backend_package_url = package_url(base_url, package_path)?;
+            let package_url = if cfg!(debug_assertions) {
+                backend_package_url
+            } else {
+                cube.get("assetBaseURL")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|raw| package_url(base_url, raw).ok())
+                    .unwrap_or(backend_package_url)
+            };
             Ok(CatalogEntry {
                 id: id.to_owned(),
                 display_name,
@@ -81,7 +122,8 @@ pub(super) fn load_catalog(base_url: &Url) -> Result<Vec<CatalogEntry>, String> 
                 package_url,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((entries, has_next_page))
 }
 
 pub(super) fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePackage, String> {
@@ -219,15 +261,21 @@ pub(super) fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePack
 }
 
 fn package_url(base_url: &Url, raw: &str) -> Result<Url, String> {
-    let url = if raw.starts_with('/') {
+    let url = if raw.starts_with("/cubes/") {
         http_url(base_url, raw)?
     } else {
         Url::parse(raw).map_err(|error| format!("cube package URL is invalid: {error}"))?
     };
-    let expected_host = base_url.host_str();
-    let allowed_host = url.host_str() == expected_host
-        || (!cfg!(debug_assertions) && url.host_str() == Some("assets.cubacadabra.com"));
-    if !allowed_host || !matches!(url.scheme(), "http" | "https") {
+    let backend_origin = url.origin() == http_url(base_url, "/")?.origin();
+    let asset_origin = !cfg!(debug_assertions)
+        && url.scheme() == "https"
+        && url.host_str() == Some("assets.cubacadabra.com")
+        && url.port().is_none();
+    if !(backend_origin || asset_origin)
+        || !matches!(url.scheme(), "http" | "https")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return Err("cube package URL is outside the configured asset hosts".to_owned());
     }
     let mut url = url;
@@ -291,4 +339,67 @@ fn is_valid_game_id(value: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_catalog, package_url, parse_catalog_page};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+    use url::Url;
+
+    #[test]
+    fn loads_all_catalog_pages_and_uses_backend_paths_for_unapproved_assets() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = thread::spawn(move || {
+            for page in 1..=2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 1024];
+                let count = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert!(
+                    request.starts_with(&format!("GET /cubes?page={page}&page_size=50 HTTP/1.1"))
+                );
+                let body = format!(
+                    "{{\"page\":{page},\"hasNextPage\":{},\"cubes\":[{{\"cubeId\":\"cube-{page}\",\"displayName\":\"Cube {page}\",\"version\":\"1\",\"packagePath\":\"/cubes/{page}/files/\",\"assetBaseURL\":\"https://untrusted.example/cubes/{page}/files/\"}}]}}",
+                    page == 1
+                );
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+
+        let entries = load_catalog(&base_url).unwrap();
+        server.join().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "cube-1");
+        assert_eq!(entries[1].id, "cube-2");
+        assert_eq!(
+            entries[1].package_url.as_str(),
+            format!("{base_url}cubes/2/files/")
+        );
+    }
+
+    #[test]
+    fn catalog_rejects_a_mismatched_page() {
+        let base_url = Url::parse("https://api.cubacadabra.com/").unwrap();
+        let result =
+            parse_catalog_page(&base_url, r#"{"page":1,"hasNextPage":false,"cubes":[]}"#, 2);
+        assert!(result.unwrap_err().contains("wrong page"));
+    }
+
+    #[test]
+    fn package_url_rejects_an_unapproved_origin() {
+        let base_url = Url::parse("https://api.cubacadabra.com/").unwrap();
+        assert!(package_url(&base_url, "https://untrusted.example/cubes/1/files/").is_err());
+        assert!(package_url(&base_url, "http://api.cubacadabra.com/cubes/1/files/").is_err());
+    }
 }
