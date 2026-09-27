@@ -1,15 +1,17 @@
 use super::{CatalogEntry, RemoteGamePackage};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 use url::Url;
 
 const MAX_CATALOG_BYTES: usize = 512 * 1024;
 const CATALOG_PAGE_SIZE: usize = 50;
 const MAX_CATALOG_PAGES: usize = 200;
 const MAX_PACKAGE_DESCRIPTOR_BYTES: usize = 512 * 1024;
-const MAX_PACKAGE_TEXT_BYTES: usize = 512 * 1024;
-const MAX_PACKAGE_FILE_BYTES: usize = 10 * 1024 * 1024;
-const MAX_PACKAGE_FILES: usize = 128;
+const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PACKAGE_FILE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PACKAGE_FILES: usize = 256;
+const MAX_PACKAGE_TOTAL_BYTES: usize = 96 * 1024 * 1024;
 
 pub(super) fn http_url(base: &Url, path: &str) -> Result<Url, String> {
     let mut url = base.clone();
@@ -175,12 +177,16 @@ pub(super) fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePack
         .package_url
         .join(entry_name)
         .map_err(|error| format!("could not build the cube script URL: {error}"))?;
-    let manifest_bytes = fetch_http_bytes(&manifest_url, MAX_PACKAGE_TEXT_BYTES)?;
-    let script_bytes = fetch_http_bytes(&script_url, MAX_PACKAGE_TEXT_BYTES)?;
-    let manifest = String::from_utf8(manifest_bytes.clone())
+    let manifest_bytes = fetch_http_bytes(&manifest_url, MAX_MANIFEST_BYTES)?;
+    let script_bytes = fetch_http_bytes(&script_url, MAX_SCRIPT_BYTES)?;
+    let manifest = String::from_utf8(manifest_bytes)
         .map_err(|_| "the cube manifest was not valid UTF-8".to_owned())?;
-    let script = String::from_utf8(script_bytes.clone())
+    let script = String::from_utf8(script_bytes)
         .map_err(|_| "the cube script was not valid UTF-8".to_owned())?;
+    let mut total_bytes = manifest.len() + script.len();
+    if total_bytes > MAX_PACKAGE_TOTAL_BYTES {
+        return Err("the cube package exceeds the download limit".to_owned());
+    }
     let manifest_value: serde_json::Value = serde_json::from_str(&manifest)
         .map_err(|error| format!("the cube manifest was invalid JSON: {error}"))?;
     if manifest_value.get("id").and_then(serde_json::Value::as_str) != Some(entry.id.as_str()) {
@@ -225,6 +231,11 @@ pub(super) fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePack
         if !is_safe_package_path(path) {
             return Err(format!("the cube package file path is unsafe: {path}"));
         }
+        // This file belongs to the server and is deliberately unavailable on
+        // the public package route, even when listed in package.json.
+        if path == "authority.luau" {
+            continue;
+        }
         let expected_hash = checksums
             .get(path)
             .and_then(serde_json::Value::as_str)
@@ -233,15 +244,20 @@ pub(super) fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePack
             return Err(format!("the cube package checksum for {path} is invalid"));
         }
         let bytes = if path == manifest_name {
-            manifest_bytes.clone()
+            Cow::Borrowed(manifest.as_bytes())
         } else if path == entry_name {
-            script_bytes.clone()
+            Cow::Borrowed(script.as_bytes())
         } else {
             let url = entry
                 .package_url
                 .join(path)
                 .map_err(|error| format!("could not build the cube asset URL: {error}"))?;
-            fetch_http_bytes(&url, MAX_PACKAGE_FILE_BYTES)?
+            let bytes = fetch_http_bytes(&url, MAX_PACKAGE_FILE_BYTES)?;
+            total_bytes += bytes.len();
+            if total_bytes > MAX_PACKAGE_TOTAL_BYTES {
+                return Err("the cube package exceeds the download limit".to_owned());
+            }
+            Cow::Owned(bytes)
         };
         if sha256_hex(&bytes) != expected_hash {
             return Err(format!(
@@ -249,7 +265,7 @@ pub(super) fn load_remote_package(entry: &CatalogEntry) -> Result<RemoteGamePack
             ));
         }
         if image_paths.contains(path) || model_paths.contains(path) {
-            package_files.push((path.to_owned(), bytes));
+            package_files.push((path.to_owned(), bytes.into_owned()));
         }
     }
     Ok(RemoteGamePackage {
@@ -297,6 +313,8 @@ fn fetch_http_bytes(url: &Url, maximum_bytes: usize) -> Result<Vec<u8>, String> 
         .map_err(|error| format!("could not load {url}: {error}"))?;
     let bytes = response
         .body_mut()
+        .with_config()
+        .limit(maximum_bytes as u64 + 1)
         .read_to_vec()
         .map_err(|error| format!("could not read {url}: {error}"))?;
     if bytes.len() > maximum_bytes {
@@ -343,7 +361,8 @@ fn is_valid_game_id(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_catalog, package_url, parse_catalog_page};
+    use super::{load_catalog, load_remote_package, package_url, parse_catalog_page, sha256_hex};
+    use crate::network::CatalogEntry;
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -401,5 +420,63 @@ mod tests {
         let base_url = Url::parse("https://api.cubacadabra.com/").unwrap();
         assert!(package_url(&base_url, "https://untrusted.example/cubes/1/files/").is_err());
         assert!(package_url(&base_url, "http://api.cubacadabra.com/cubes/1/files/").is_err());
+    }
+
+    #[test]
+    fn loads_public_files_without_requesting_server_authority() {
+        let manifest = r#"{"id":"maze-101","version":"0.6.2"}"#;
+        let script = "return {}";
+        let descriptor = serde_json::json!({
+            "id": "maze-101",
+            "version": "0.6.2",
+            "manifest": "manifest.json",
+            "entry": "game.luau",
+            "files": ["authority.luau", "game.luau", "manifest.json"],
+            "sha256": {
+                "authority.luau": sha256_hex(b"server only"),
+                "game.luau": sha256_hex(script.as_bytes()),
+                "manifest.json": sha256_hex(manifest.as_bytes()),
+            }
+        })
+        .to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let package_url = Url::parse(&format!(
+            "http://{}/cubes/11/files/",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = thread::spawn(move || {
+            for (path, body) in [
+                ("package.json", descriptor.as_str()),
+                ("manifest.json", manifest),
+                ("game.luau", script),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 1024];
+                let count = stream.read(&mut request).unwrap();
+                assert!(
+                    String::from_utf8_lossy(&request[..count])
+                        .starts_with(&format!("GET /cubes/11/files/{path} HTTP/1.1"))
+                );
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let entry = CatalogEntry {
+            id: "maze-101".to_owned(),
+            display_name: "Maze 101".to_owned(),
+            version: "0.6.2".to_owned(),
+            package_url,
+        };
+        let package = load_remote_package(&entry).unwrap();
+        server.join().unwrap();
+        assert_eq!(package.id, "maze-101");
+        assert_eq!(package.manifest, manifest);
+        assert_eq!(package.script, script);
+        assert!(package.files.is_empty());
     }
 }

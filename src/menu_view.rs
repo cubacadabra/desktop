@@ -18,7 +18,9 @@ impl PlayerMenu {
                         super::Screen::Home => self.show_home(ui, current_game_id),
                         super::Screen::Catalog => self.show_catalog(ui),
                     }
-                    if let Some(error) = &self.game_error {
+                    if self.screen == super::Screen::Home
+                        && let Some(error) = &self.game_error
+                    {
                         ui.add_space(12.0);
                         ui.colored_label(egui::Color32::from_rgb(190, 55, 45), error);
                     }
@@ -194,6 +196,12 @@ impl PlayerMenu {
         });
         ui.add_space(8.0);
         ui.label("Choose an uploaded cube to download and enter.");
+        if let Some(game_id) = &self.loading_game_id {
+            ui.label(format!("Downloading {game_id}…"));
+        }
+        if let Some(error) = &self.game_error {
+            ui.colored_label(egui::Color32::from_rgb(190, 55, 45), error);
+        }
         ui.add_space(24.0);
         section_label(ui, "UPLOADED CUBES");
         if self.catalog.loading {
