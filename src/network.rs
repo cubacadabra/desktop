@@ -80,14 +80,12 @@ pub struct AuthSession {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebPage {
     Account,
-    About,
 }
 
 impl WebPage {
     fn location(self) -> (&'static str, Option<&'static str>) {
         match self {
             Self::Account => ("/my-cube/", None),
-            Self::About => ("/about/", None),
         }
     }
 }
@@ -487,15 +485,11 @@ mod tests {
     }
 
     #[test]
-    fn web_control_plane_pages_have_stable_destinations() {
+    fn web_account_page_has_a_stable_destination() {
         let base = Url::parse("https://cubacadabra.com/login/?stale=true").unwrap();
         assert_eq!(
-            apply_web_page(base.clone(), WebPage::Account).as_str(),
+            apply_web_page(base, WebPage::Account).as_str(),
             "https://cubacadabra.com/my-cube/"
-        );
-        assert_eq!(
-            apply_web_page(base, WebPage::About).as_str(),
-            "https://cubacadabra.com/about/"
         );
     }
 }

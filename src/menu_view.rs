@@ -10,9 +10,6 @@ impl PlayerMenu {
                     ui.add_space(18.0);
                     ui.horizontal(|ui| {
                         ui.heading("CUBACADABRA");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label("●");
-                        });
                     });
                     match self.screen {
                         super::Screen::Home => self.show_home(ui, current_game_id),
@@ -30,17 +27,25 @@ impl PlayerMenu {
     }
 
     fn show_home(&mut self, ui: &mut egui::Ui, current_game_id: &str) {
-        ui.add_space(46.0);
-        ui.heading(egui::RichText::new("Your cubes").size(38.0));
-        ui.label("Choose a game to enter its lobby.");
-        ui.add_space(30.0);
-        section_label(ui, "CUBES");
+        ui.add_space(16.0);
+        ui.heading(egui::RichText::new("Example games").size(24.0));
+        ui.label("Choose a game to play.");
+        ui.add_space(16.0);
         egui::Frame::group(ui.style()).show(ui, |ui| {
             let games = [
-                ("first-game", "First Game", "Build together in the clearing"),
+                (
+                    "heavy2",
+                    "Cuboom",
+                    "Restore letter strokes and build a tower together",
+                ),
+                (
+                    "first-game",
+                    "Spellbound Schoolyard",
+                    "Learn and cast three charms together",
+                ),
                 (
                     "second-game",
-                    "Second Game",
+                    "Signal Run",
                     "Drop signals in the relay yard",
                 ),
             ];

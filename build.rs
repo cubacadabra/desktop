@@ -26,8 +26,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .parent()
         .ok_or("desktop repository has no workspace parent")?;
     let game_roots = [
-        ("first-game", workspace_root.join("first-game")),
-        ("second-game", workspace_root.join("second-game")),
+        ("heavy2", workspace_root.join("examples/cuboom")),
+        ("first-game", workspace_root.join("examples/first-game")),
+        ("second-game", workspace_root.join("examples/second-game")),
     ];
     let tools_root = workspace_root.join("tools");
     let output_root = PathBuf::from(env::var("OUT_DIR")?).join("game-packages");
